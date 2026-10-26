@@ -1,0 +1,735 @@
+:root {
+  --kami-bg: #f6f4ef;
+  --kami-paper: #fbfaf7;
+  --kami-paper-elevated: #ffffff;
+  --kami-sidebar-bg: #f2EFE9;
+  --kami-ink: #2c2825;
+  --kami-ink-secondary: #5c564f;
+  --kami-ink-muted: #8c847a;
+  --kami-border: rgba(44, 40, 37, 0.11);
+  --kami-border-strong: rgba(44, 40, 37, 0.2);
+  --kami-accent: #c85a32;
+  --kami-accent-soft: rgba(200, 90, 50, 0.12);
+  --kami-shadow-sm: 0 2px 8px rgba(44, 40, 37, 0.05);
+  --kami-shadow-md: 0 8px 28px rgba(44, 40, 37, 0.08);
+  --kami-shadow-lg: 0 18px 46px rgba(44, 40, 37, 0.14);
+  --kami-serif: 'Noto Serif SC', 'Songti SC', 'Source Han Serif SC', Georgia, serif;
+  --kami-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  --kami-mono: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* Framework7 overrides for Kami warm paper theme */
+  --f7-theme-color: #c85a32;
+  --f7-theme-color-rgb: 200, 90, 50;
+  --f7-page-bg-color: var(--kami-bg);
+  --f7-navbar-bg-color: rgba(251, 250, 247, 0.88);
+  --f7-navbar-border-color: var(--kami-border);
+  --f7-navbar-text-color: var(--kami-ink);
+  --f7-bars-bg-color: rgba(251, 250, 247, 0.9);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background-color: var(--kami-bg);
+  color: var(--kami-ink);
+  font-family: var(--kami-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Subtle paper grain overlay */
+.kami-shell {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background:
+    radial-gradient(circle at 12% 8%, rgba(200, 90, 50, 0.04), transparent 36%),
+    radial-gradient(circle at 88% 92%, rgba(58, 110, 165, 0.04), transparent 40%),
+    var(--kami-bg);
+  overflow: hidden;
+}
+
+/* Top Framework7 Navbar in Kami Aesthetic */
+.kami-navbar {
+  height: 58px;
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 22px;
+  background: rgba(251, 250, 247, 0.92);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--kami-border);
+  z-index: 40;
+  flex-shrink: 0;
+}
+
+.kami-brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.kami-logo-seal {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--kami-accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: var(--kami-serif);
+  font-weight: 700;
+  font-size: 16px;
+  letter-spacing: 0.02em;
+  box-shadow: 0 3px 10px rgba(200, 90, 50, 0.28);
+}
+
+.kami-title-group {
+  display: flex;
+  flex-direction: column;
+}
+
+.kami-app-title {
+  font-family: var(--kami-serif);
+  font-weight: 700;
+  font-size: 16px;
+  color: var(--kami-ink);
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+}
+
+.kami-doc-subtitle {
+  font-size: 11.5px;
+  color: var(--kami-ink-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.kami-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.kami-btn {
+  appearance: none;
+  border: 1px solid var(--kami-border-strong);
+  background: var(--kami-paper-elevated);
+  color: var(--kami-ink);
+  font-family: var(--kami-sans);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: 9px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  transition: all 0.16s ease;
+  box-shadow: var(--kami-shadow-sm);
+  white-space: nowrap;
+}
+
+.kami-btn:hover {
+  border-color: var(--kami-accent);
+  color: var(--kami-accent);
+  transform: translateY(-1px);
+}
+
+.kami-btn:active {
+  transform: translateY(0);
+}
+
+.kami-btn-primary {
+  background: var(--kami-accent);
+  color: #fff;
+  border-color: var(--kami-accent);
+}
+
+.kami-btn-primary:hover {
+  background: #b54e28;
+  color: #fff;
+  border-color: #b54e28;
+}
+
+/* Main Split Workspace */
+.kami-workspace {
+  flex: 1;
+  display: flex;
+  position: relative;
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Left Column: Markdown Reader */
+.kami-reader-pane {
+  flex: 1;
+  height: 100%;
+  overflow-y: auto;
+  padding: 36px 28px 96px;
+  transition: padding-right 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+  position: relative;
+  user-select: text;
+}
+
+.kami-paper-sheet {
+  max-width: 780px;
+  margin: 0 auto;
+  background: var(--kami-paper);
+  border: 1px solid var(--kami-border);
+  border-radius: 16px;
+  padding: 48px 56px;
+  box-shadow: var(--kami-shadow-md);
+  position: relative;
+}
+
+/* Paper top bookmark / status ribbon */
+.kami-sheet-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 18px;
+  margin-bottom: 28px;
+  border-bottom: 1px dashed var(--kami-border);
+  font-size: 12px;
+  color: var(--kami-ink-muted);
+}
+
+.kami-sheet-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--kami-accent-soft);
+  color: var(--kami-accent);
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+/* Kami Article Typography */
+.kami-markdown-body {
+  font-family: var(--kami-serif);
+  font-size: 17px;
+  line-height: 1.9;
+  color: var(--kami-ink);
+  letter-spacing: 0.015em;
+  word-break: break-word;
+}
+
+.kami-markdown-body h1,
+.kami-markdown-body h2,
+.kami-markdown-body h3,
+.kami-markdown-body h4 {
+  font-family: var(--kami-serif);
+  color: #1f1c19;
+  font-weight: 700;
+  line-height: 1.38;
+  margin-top: 1.7em;
+  margin-bottom: 0.65em;
+}
+
+.kami-markdown-body h1 {
+  font-size: 1.85rem;
+  margin-top: 0.2em;
+  padding-bottom: 0.45em;
+  border-bottom: 1px solid var(--kami-border);
+}
+
+.kami-markdown-body h2 {
+  font-size: 1.4rem;
+  position: relative;
+  padding-left: 14px;
+}
+
+.kami-markdown-body h2::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.22em;
+  bottom: 0.22em;
+  width: 4px;
+  border-radius: 2px;
+  background: var(--kami-accent);
+}
+
+.kami-markdown-body h3 {
+  font-size: 1.18rem;
+}
+
+.kami-markdown-body p {
+  margin: 0 0 1.25em;
+}
+
+.kami-markdown-body blockquote {
+  margin: 1.4em 0;
+  padding: 12px 20px;
+  background: rgba(200, 90, 50, 0.045);
+  border-left: 3px solid var(--kami-accent);
+  border-radius: 0 10px 10px 0;
+  color: var(--kami-ink-secondary);
+  font-style: normal;
+}
+
+.kami-markdown-body blockquote p:last-child {
+  margin-bottom: 0;
+}
+
+.kami-markdown-body code {
+  font-family: var(--kami-mono);
+  font-size: 0.86em;
+  background: rgba(44, 40, 37, 0.065);
+  color: #9e3b24;
+  padding: 2px 6px;
+  border-radius: 5px;
+}
+
+.kami-markdown-body pre {
+  font-family: var(--kami-mono);
+  font-size: 13.5px;
+  line-height: 1.65;
+  background: #23211f;
+  color: #f4f0ea;
+  padding: 16px 20px;
+  border-radius: 10px;
+  overflow-x: auto;
+  margin: 1.4em 0;
+}
+
+.kami-markdown-body pre code {
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: inherit;
+}
+
+.kami-markdown-body ul,
+.kami-markdown-body ol {
+  padding-left: 1.6em;
+  margin: 0 0 1.25em;
+}
+
+.kami-markdown-body li {
+  margin-bottom: 0.4em;
+}
+
+.kami-markdown-body .katex-display {
+  margin: 1.4em 0;
+  padding: 14px 18px;
+  background: rgba(44, 40, 37, 0.028);
+  border: 1px solid var(--kami-border);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+
+/* Embedded Paperclip Badge 📎 inside Markdown DOM */
+.clip-anchor-pin {
+  --clip-color: #c85a32;
+  appearance: none;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0 !important;
+  border: 1.5px solid var(--clip-color);
+  background: color-mix(in srgb, var(--clip-color) 14%, #ffffff);
+  color: var(--clip-color);
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 1px 7px 1px 5px;
+  margin: 0 4px;
+  border-radius: 999px;
+  font-family: var(--kami-sans);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+  cursor: pointer;
+  vertical-align: middle;
+  white-space: nowrap;
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--clip-color) 28%, transparent);
+  transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.16s ease, background 0.16s ease;
+  user-select: none;
+}
+
+.clip-anchor-pin:hover {
+  transform: translateY(-2px) scale(1.07);
+  background: color-mix(in srgb, var(--clip-color) 24%, #ffffff);
+}
+
+.clip-anchor-pin.is-selected {
+  background: var(--clip-color);
+  color: #ffffff;
+  transform: scale(1.1);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--clip-color) 30%, transparent);
+}
+
+.clip-anchor-pin .clip-emoji {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.clip-anchor-pin .clip-count {
+  font-size: 11px;
+}
+
+/* Long-press Progressive Paperclip Indicator */
+.longpress-ghost-clip {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.longpress-ring-wrap {
+  position: relative;
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(251, 250, 247, 0.9);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+}
+
+.longpress-emoji {
+  font-size: 24px;
+  transition: transform 0.06s linear;
+}
+
+.longpress-caption {
+  font-family: var(--kami-sans);
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(44, 40, 37, 0.85);
+  color: #fff;
+  white-space: nowrap;
+}
+
+/* Right Column: Conversational Annotation Drawer */
+.kami-annotation-drawer {
+  width: 410px;
+  max-width: 45vw;
+  height: 100%;
+  background: var(--kami-paper);
+  border-left: 1px solid var(--kami-border-strong);
+  box-shadow: -8px 0 30px rgba(44, 40, 37, 0.08);
+  display: flex;
+  flex-direction: column;
+  z-index: 30;
+  flex-shrink: 0;
+  animation: kamiSlideIn 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes kamiSlideIn {
+  from {
+    opacity: 0;
+    transform: translateX(28px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.drawer-header {
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--kami-border);
+  background: var(--kami-sidebar-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.drawer-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.drawer-clip-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--kami-ink);
+}
+
+.drawer-color-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.drawer-anchor-preview {
+  font-size: 12px;
+  color: var(--kami-ink-secondary);
+  background: rgba(255, 255, 255, 0.65);
+  border: 1px solid var(--kami-border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-family: var(--kami-serif);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Messages Stream in Right Drawer */
+.drawer-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.drawer-empty-state {
+  margin: auto 0;
+  text-align: center;
+  padding: 28px 16px;
+  color: var(--kami-ink-muted);
+  font-size: 13.5px;
+  line-height: 1.7;
+}
+
+.chat-bubble-card {
+  border-radius: 12px;
+  padding: 12px 15px;
+  border: 1px solid var(--kami-border);
+  font-size: 14px;
+  line-height: 1.68;
+  position: relative;
+}
+
+.chat-bubble-user {
+  background: #ffffff;
+  border-left: 3.5px solid var(--clip-accent, var(--kami-accent));
+  align-self: stretch;
+}
+
+.chat-bubble-ai {
+  background: #f5f2eb;
+  border-left: 3.5px solid #3a6ea5;
+  align-self: stretch;
+}
+
+.chat-role-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--kami-ink-muted);
+  margin-bottom: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.chat-ai-html-content {
+  font-family: var(--kami-serif);
+  color: var(--kami-ink);
+  font-size: 14.5px;
+  line-height: 1.75;
+}
+
+.chat-ai-html-content p {
+  margin: 0 0 0.65em;
+}
+
+.chat-ai-html-content p:last-child {
+  margin-bottom: 0;
+}
+
+.chat-ai-html-content ul,
+.chat-ai-html-content ol {
+  margin: 0.4em 0 0.7em;
+  padding-left: 1.3em;
+}
+
+.chat-ai-html-content code {
+  font-family: var(--kami-mono);
+  font-size: 0.85em;
+  background: rgba(44, 40, 37, 0.08);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+/* Composer at bottom of Right Drawer */
+.drawer-composer {
+  padding: 14px 16px;
+  border-top: 1px solid var(--kami-border);
+  background: var(--kami-sidebar-bg);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.composer-textarea {
+  width: 100%;
+  min-height: 74px;
+  max-height: 160px;
+  resize: vertical;
+  border: 1px solid var(--kami-border-strong);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-family: var(--kami-sans);
+  font-size: 13.5px;
+  line-height: 1.5;
+  background: #ffffff;
+  color: var(--kami-ink);
+  outline: none;
+  transition: border-color 0.15s ease;
+}
+
+.composer-textarea:focus {
+  border-color: var(--kami-accent);
+}
+
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.composer-tip {
+  font-size: 11.5px;
+  color: var(--kami-ink-muted);
+}
+
+/* Modal Dialogs (Settings & Annotated Markdown Preview) */
+.kami-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 25, 22, 0.42);
+  backdrop-filter: blur(4px);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.kami-modal-card {
+  width: 100%;
+  max-width: 560px;
+  background: var(--kami-paper);
+  border: 1px solid var(--kami-border-strong);
+  border-radius: 16px;
+  box-shadow: var(--kami-shadow-lg);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 86vh;
+}
+
+.kami-modal-header {
+  padding: 16px 20px;
+  background: var(--kami-sidebar-bg);
+  border-bottom: 1px solid var(--kami-border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--kami-serif);
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.kami-modal-body {
+  padding: 20px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.kami-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.kami-field label {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--kami-ink-secondary);
+}
+
+.kami-input {
+  border: 1px solid var(--kami-border-strong);
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13.5px;
+  font-family: var(--kami-mono);
+  background: #fff;
+  color: var(--kami-ink);
+  outline: none;
+}
+
+.kami-input:focus {
+  border-color: var(--kami-accent);
+}
+
+.kami-code-preview {
+  font-family: var(--kami-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  background: #1f1d1b;
+  color: #f5f2eb;
+  padding: 14px;
+  border-radius: 10px;
+  overflow: auto;
+  max-height: 48vh;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.kami-toast {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(35, 32, 29, 0.92);
+  color: #fff;
+  padding: 9px 18px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 500;
+  z-index: 300;
+  box-shadow: var(--kami-shadow-md);
+  pointer-events: none;
+}
+
+@media (max-width: 900px) {
+  .kami-paper-sheet {
+    padding: 28px 24px;
+  }
+  .kami-annotation-drawer {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 360px;
+    max-width: 90vw;
+  }
+}
