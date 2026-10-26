@@ -343,8 +343,9 @@ export function mountPaperclipsIntoDom(
   selectedClipId: string | null,
   onSelectClip: (clipId: string) => void
 ): void {
-  // Remove any previously mounted pins
+  // Remove any previously mounted pins and merge split text nodes back together
   container.querySelectorAll('.clip-anchor-pin').forEach((el) => el.remove());
+  container.normalize();
 
   for (const clip of clips) {
     const pin = createPaperclipBadgeElement(clip, clip.id === selectedClipId, onSelectClip);

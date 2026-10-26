@@ -1,14 +1,16 @@
 {
-  "name": "coachme",
+  "name": "margintalk",
   "module": "index.ts",
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite",
+    "dev": "bun scripts/dev.ts",
+    "start": "bun index.ts",
     "build": "vite build",
-    "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "playwright test"
+    "preview": "bun index.ts",
+    "check": "svelte-check --tsconfig ./tsconfig.json --tsgo",
+    "test": "bun run build && playwright test",
+    "test:unit": "bun test tests/"
   },
   "devDependencies": {
     "@playwright/test": "^1.64.1",
@@ -16,11 +18,10 @@
     "@types/bun": "^1.4.4",
     "@types/node": "^26.6.5",
     "@types/sanitize-html": "^2.16.2",
+    "@typescript/native": "npm:typescript@^7",
     "svelte-check": "^4.7.7",
+    "typescript": "^6",
     "vite": "^8.3.5"
-  },
-  "peerDependencies": {
-    "typescript": "^7.0.2"
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.78",
@@ -30,6 +31,8 @@
     "katex": "^0.19.1",
     "rehype-highlight": "^7.0.2",
     "rehype-katex": "^7.0.1",
+    "rehype-raw": "^7.0.0",
+    "rehype-sanitize": "^6.0.0",
     "rehype-stringify": "^10.0.1",
     "remark-frontmatter": "^5.0.0",
     "remark-gfm": "^4.0.1",

@@ -1,0 +1,20 @@
+# Copy to margintalk.config.toml; never put real credentials in this example.
+[server]
+host = "127.0.0.1"
+port = 3000
+# Vite development origin. In production set your real HTTPS origin and serve the built client.
+publicURL = "http://127.0.0.1:5173"
+databasePath = "./data/margintalk.sqlite"
+
+[amazon]
+# Register a Login with Amazon security profile and an allowed return URL:
+# https://YOUR-DOMAIN/auth/amazon/callback
+clientId = ""
+clientSecret = ""
+
+[ai]
+baseURL = "https://api.openai.com/v1"
+apiKey = ""
+model = "gpt-4o-mini"
+# Empty omits thinking options; use a value supported by your configured model, e.g. max.
+reasoningEffort = ""

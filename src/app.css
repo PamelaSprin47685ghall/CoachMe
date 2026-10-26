@@ -60,12 +60,13 @@ body,
 
 /* Top Framework7 Navbar in Kami Aesthetic */
 .kami-navbar {
-  height: 58px;
-  min-height: 58px;
+  height: auto;
+  min-height: 72px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 22px;
+  gap: 16px;
+  padding: 12px 22px;
   background: rgba(251, 250, 247, 0.92);
   backdrop-filter: blur(12px);
   border-bottom: 1px solid var(--kami-border);
@@ -74,6 +75,8 @@ body,
 }
 
 .kami-brand {
+  flex: 1;
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -96,6 +99,7 @@ body,
 }
 
 .kami-title-group {
+  min-width: 0;
   display: flex;
   flex-direction: column;
 }
@@ -115,28 +119,87 @@ body,
   display: flex;
   align-items: center;
   gap: 6px;
+  flex-wrap: wrap;
+}
+
+.kami-doc-subtitle > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kami-doc-subtitle > span:last-child {
+  flex-shrink: 0;
+}
+
+.kami-sync-status {
+  min-width: 0;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(44, 40, 37, 0.06);
+  color: var(--kami-ink-secondary);
+  font-weight: 500;
+}
+
+.kami-sync-status[data-sync-state='dirty'],
+.kami-sync-status[data-sync-state='saving'] {
+  background: rgba(198, 125, 48, 0.16);
+  color: #8a5714;
+}
+
+.kami-sync-status[data-sync-state='error'] {
+  background: rgba(217, 83, 79, 0.16);
+  color: #a52a25;
+  font-weight: 700;
+}
+
+.kami-sync-status[data-sync-state='conflict'] {
+  background: rgba(181, 82, 57, 0.2);
+  color: #8c3a24;
+  font-weight: 700;
+}
+
+.kami-sync-status[data-sync-state='local'] {
+  background: rgba(58, 110, 165, 0.12);
+  color: #2c5885;
 }
 
 .kami-toolbar-actions {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex-shrink: 0;
+}
+
+.toolbar-label-compact {
+  display: none;
 }
 
 .kami-btn {
   appearance: none;
+  width: auto;
   border: 1px solid var(--kami-border-strong);
   background: var(--kami-paper-elevated);
   color: var(--kami-ink);
   font-family: var(--kami-sans);
-  font-size: 13px;
+  font-size: 15px;
   font-weight: 500;
-  padding: 7px 14px;
-  border-radius: 9px;
+  min-width: 48px;
+  min-height: 48px;
+  padding: 11px 16px;
+  border-radius: 12px;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 7px;
+  line-height: 1.3;
+  touch-action: manipulation;
   transition: all 0.16s ease;
   box-shadow: var(--kami-shadow-sm);
   white-space: nowrap;
@@ -150,6 +213,19 @@ body,
 
 .kami-btn:active {
   transform: translateY(0);
+}
+
+.kami-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
+.kami-btn:focus-visible,
+.clip-anchor-pin:focus-visible {
+  outline: 2px solid var(--kami-accent);
+  outline-offset: 3px;
 }
 
 .kami-btn-primary {
@@ -176,17 +252,18 @@ body,
 /* Left Column: Markdown Reader */
 .kami-reader-pane {
   flex: 1;
+  min-width: 0;
   height: 100%;
   overflow-y: auto;
   padding: 36px 28px 96px;
   transition: padding-right 0.28s cubic-bezier(0.22, 1, 0.36, 1);
   position: relative;
-  user-select: text;
+  -webkit-user-select: none;
+  user-select: none;
 }
 
 .kami-paper-sheet {
-  max-width: 780px;
-  margin: 0 auto;
+  width: 100%;
   background: var(--kami-paper);
   border: 1px solid var(--kami-border);
   border-radius: 16px;
@@ -339,19 +416,20 @@ body,
   appearance: none;
   width: auto !important;
   height: auto !important;
-  min-width: 0 !important;
+  min-width: 44px !important;
+  min-height: 44px;
   border: 1.5px solid var(--clip-color);
   background: color-mix(in srgb, var(--clip-color) 14%, #ffffff);
   color: var(--clip-color);
   display: inline-flex !important;
   align-items: center;
   justify-content: center;
-  gap: 3px;
-  padding: 1px 7px 1px 5px;
+  gap: 4px;
+  padding: 6px 10px;
   margin: 0 4px;
   border-radius: 999px;
   font-family: var(--kami-sans);
-  font-size: 12px;
+  font-size: 14px;
   font-weight: 700;
   line-height: 1.35;
   cursor: pointer;
@@ -360,6 +438,7 @@ body,
   box-shadow: 0 2px 6px color-mix(in srgb, var(--clip-color) 28%, transparent);
   transition: transform 0.16s cubic-bezier(0.34, 1.56, 0.64, 1), box-shadow 0.16s ease, background 0.16s ease;
   user-select: none;
+  touch-action: manipulation;
 }
 
 .clip-anchor-pin:hover {
@@ -375,12 +454,12 @@ body,
 }
 
 .clip-anchor-pin .clip-emoji {
-  font-size: 13px;
+  font-size: 22px;
   line-height: 1;
 }
 
 .clip-anchor-pin .clip-count {
-  font-size: 11px;
+  font-size: 13px;
 }
 
 /* Long-press Progressive Paperclip Indicator */
@@ -424,6 +503,10 @@ body,
 }
 
 /* Right Column: Conversational Annotation Drawer */
+.mobile-annotation-backdrop {
+  display: none;
+}
+
 .kami-annotation-drawer {
   width: 410px;
   max-width: 45vw;
@@ -462,15 +545,31 @@ body,
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
+}
+
+.drawer-header-actions {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  gap: 8px;
 }
 
 .drawer-clip-badge {
+  min-width: 0;
   display: inline-flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   font-weight: 700;
   font-size: 14px;
   color: var(--kami-ink);
+}
+
+.drawer-clip-meta {
+  font-size: 12px;
+  color: var(--kami-ink-muted);
+  font-weight: 500;
 }
 
 .drawer-color-dot {
@@ -545,6 +644,54 @@ body,
   letter-spacing: 0.04em;
 }
 
+.thinking-live-badge {
+  font-size: 10.5px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(58, 110, 165, 0.14);
+  color: #2c5885;
+  font-weight: 600;
+}
+
+.chat-reasoning-live,
+.chat-reasoning-details {
+  margin: 6px 0 10px;
+  padding: 8px 11px;
+  background: rgba(44, 40, 37, 0.045);
+  border-left: 2.5px solid #8c7f70;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color: var(--kami-ink-secondary);
+}
+
+.chat-reasoning-live-title {
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--kami-ink-muted);
+  margin-bottom: 4px;
+}
+
+.chat-reasoning-summary {
+  min-height: 44px;
+  padding: 10px 4px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--kami-ink-muted);
+  user-select: none;
+  touch-action: manipulation;
+}
+
+.chat-reasoning-body {
+  margin-top: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--kami-sans);
+  line-height: 1.58;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
 .chat-ai-html-content {
   font-family: var(--kami-serif);
   color: var(--kami-ink);
@@ -586,14 +733,14 @@ body,
 
 .composer-textarea {
   width: 100%;
-  min-height: 74px;
+  min-height: 96px;
   max-height: 160px;
   resize: vertical;
   border: 1px solid var(--kami-border-strong);
   border-radius: 10px;
   padding: 10px 12px;
   font-family: var(--kami-sans);
-  font-size: 13.5px;
+  font-size: 16px;
   line-height: 1.5;
   background: #ffffff;
   color: var(--kami-ink);
@@ -644,6 +791,7 @@ body,
 }
 
 .kami-modal-header {
+  flex-shrink: 0;
   padding: 16px 20px;
   background: var(--kami-sidebar-bg);
   border-bottom: 1px solid var(--kami-border);
@@ -653,41 +801,31 @@ body,
   font-family: var(--kami-serif);
   font-weight: 700;
   font-size: 16px;
+  gap: 12px;
+}
+
+.kami-modal-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.kami-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: 10px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--kami-border);
+  background: var(--kami-sidebar-bg);
 }
 
 .kami-modal-body {
+  min-height: 0;
   padding: 20px;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
   gap: 14px;
-}
-
-.kami-field {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.kami-field label {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--kami-ink-secondary);
-}
-
-.kami-input {
-  border: 1px solid var(--kami-border-strong);
-  border-radius: 8px;
-  padding: 9px 12px;
-  font-size: 13.5px;
-  font-family: var(--kami-mono);
-  background: #fff;
-  color: var(--kami-ink);
-  outline: none;
-}
-
-.kami-input:focus {
-  border-color: var(--kami-accent);
 }
 
 .kami-code-preview {
@@ -720,16 +858,529 @@ body,
   pointer-events: none;
 }
 
+/* Account / cloud action buttons */
+.kami-btn-amazon {
+  text-decoration: none;
+  background: #232f3e;
+  border-color: #232f3e;
+  color: #fff9ef;
+}
+
+.kami-btn-amazon:hover {
+  background: #31465d;
+  border-color: #31465d;
+  color: #ffffff;
+}
+
+.kami-btn-danger {
+  color: #b52b27;
+  border-color: rgba(217, 83, 79, 0.5);
+  background: #fff5f5;
+}
+
+.kami-btn-danger:hover {
+  color: #ffffff;
+  background: #d9534f;
+  border-color: #d9534f;
+}
+
+.kami-btn-mini {
+  min-height: 48px;
+  min-width: 0;
+  padding: 8px 12px;
+  font-size: 13.5px;
+  border-radius: 10px;
+}
+
+.kami-btn-account {
+  border-color: var(--kami-accent);
+  color: var(--kami-accent);
+  background: var(--kami-accent-soft);
+}
+
+.kami-btn-account .toolbar-label-wide {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Status bars inside the paper sheet */
+.kami-alert-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 18px;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(217, 83, 79, 0.45);
+  background: #fff5f5;
+  color: #a52a25;
+  font-size: 13.5px;
+  line-height: 1.6;
+}
+
+.kami-alert-text {
+  flex: 1;
+  min-width: 220px;
+}
+
+.kami-alert-bar .kami-confirm-actions {
+  flex-wrap: wrap;
+}
+
+.kami-confirm-panel-inline {
+  width: 100%;
+  margin-top: 4px;
+  padding: 12px 0 0;
+  border-top: 1px dashed rgba(217, 83, 79, 0.45);
+  background: transparent;
+  border-radius: 0;
+}
+
+.kami-alert-bar-warn {
+  border-color: rgba(198, 125, 48, 0.5);
+  background: #fffaf0;
+  color: #8a5714;
+}
+
+.kami-inline-note {
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px dashed var(--kami-border-strong);
+  background: rgba(44, 40, 37, 0.035);
+  color: var(--kami-ink-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.kami-loading-state {
+  text-align: center;
+  padding: 28px 12px;
+  color: var(--kami-ink-muted);
+  font-size: 14px;
+}
+
+.kami-note {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--kami-ink-secondary);
+}
+
+.kami-error-bubble {
+  border-color: rgba(217, 83, 79, 0.55);
+  background: #fff5f5;
+  color: #b52b27;
+  font-size: 12.5px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.kami-error-hint {
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--kami-ink-secondary);
+}
+
+/* Cloud document library */
+.library-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.library-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border: 1px solid var(--kami-border);
+  border-radius: 12px;
+  background: var(--kami-paper-elevated);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.library-row:hover {
+  border-color: var(--kami-accent);
+  box-shadow: var(--kami-shadow-sm);
+}
+
+.library-row.is-active {
+  border-color: var(--kami-accent);
+  background: var(--kami-accent-soft);
+}
+
+.library-row-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.library-row-name {
+  font-family: var(--kami-serif);
+  font-weight: 700;
+  font-size: 14.5px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.library-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  font-size: 11.5px;
+  color: var(--kami-ink-muted);
+}
+
+.library-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.kami-confirm-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 14px 18px;
+  border-top: 1px solid rgba(217, 83, 79, 0.35);
+  background: #fff5f5;
+}
+
+.kami-confirm-text {
+  flex: 1;
+  min-width: 0;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.6;
+  color: #b52b27;
+}
+
+.kami-confirm-actions {
+  display: flex;
+  gap: 10px;
+  flex-shrink: 0;
+}
+
+/* Account modal */
+.kami-modal-card-narrow {
+  max-width: 440px;
+}
+
+.account-identity {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--kami-border);
+  border-radius: 12px;
+  background: var(--kami-paper-elevated);
+}
+
+.account-avatar {
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  background: var(--kami-accent-soft);
+  color: var(--kami-accent);
+}
+
+.account-lines {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.account-lines strong {
+  font-family: var(--kami-serif);
+  font-size: 15.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-lines span {
+  font-size: 12px;
+  color: var(--kami-ink-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 900px) {
+  .kami-navbar {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px 16px;
+    padding-top: calc(12px + env(safe-area-inset-top));
+  }
+
+  .kami-brand {
+    flex: none;
+  }
+
+  .kami-logo-seal {
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    font-size: 20px;
+  }
+
+  .kami-title-group {
+    flex: 1;
+  }
+
+  .kami-toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .kami-toolbar-actions .kami-btn {
+    min-width: 0;
+    padding: 10px 6px;
+    font-size: 14px;
+    gap: 4px;
+  }
+
+  .toolbar-label-wide {
+    display: none;
+  }
+
+  .toolbar-label-compact {
+    display: inline;
+  }
+
   .kami-paper-sheet {
     padding: 28px 24px;
   }
   .kami-annotation-drawer {
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
     width: 360px;
-    max-width: 90vw;
+  }
+}
+
+@media (max-width: 640px) {
+  .kami-reader-pane {
+    padding: 16px 12px 64px;
+  }
+
+  .kami-paper-sheet {
+    padding: 24px 16px;
+    border-radius: 12px;
+  }
+
+  .kami-sheet-meta {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 20px;
+  }
+
+  .kami-sheet-hint {
+    padding: 8px 10px;
+    border-radius: 10px;
+    line-height: 1.6;
+  }
+
+  .kami-markdown-body h1 {
+    font-size: 1.6rem;
+  }
+
+  .mobile-annotation-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: rgba(246, 244, 239, 0.9);
+    -webkit-backdrop-filter: blur(20px);
+    backdrop-filter: blur(20px);
+    touch-action: none;
+  }
+
+  .kami-annotation-drawer {
+    position: fixed;
+    inset: 0 0 0 48px;
+    z-index: 60;
+    width: calc(100% - 48px);
+    max-width: none;
+    height: 100%;
+    height: 100dvh;
+    border-radius: 16px 0 0 16px;
+    overflow: hidden;
+  }
+
+  .drawer-header {
+    flex-shrink: 0;
+    padding-top: calc(16px + env(safe-area-inset-top));
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .drawer-header-top {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .drawer-clip-meta {
+    display: none;
+  }
+
+  .drawer-header-actions .kami-btn {
+    padding: 10px;
+  }
+
+  .drawer-messages {
+    min-height: 0;
+    overscroll-behavior: contain;
+    padding: 16px 14px;
+  }
+
+  .drawer-composer {
+    flex-shrink: 0;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .composer-tip {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+
+  .composer-footer {
+    display: block;
+  }
+
+  .composer-footer .kami-btn {
+    width: 100%;
+    min-height: 52px;
+  }
+
+  .composer-textarea {
+    resize: none;
+  }
+
+  .kami-modal-backdrop {
+    padding: 8px;
+  }
+
+  .kami-modal-card {
+    max-height: calc(100dvh - 16px);
+  }
+
+  .kami-modal-header {
+    flex-wrap: wrap;
+    padding: 14px 16px;
+  }
+
+  .kami-modal-header > span {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .kami-modal-actions,
+  .kami-modal-footer {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kami-modal-actions {
+    width: 100%;
+  }
+
+  .kami-modal-footer {
+    padding: 14px 16px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .kami-modal-body {
+    padding: 16px;
+    gap: 16px;
+    overscroll-behavior: contain;
+  }
+
+  .library-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .library-row-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kami-confirm-panel {
+    align-items: stretch;
+    flex-direction: column;
+    padding: 14px 16px;
+    padding-bottom: calc(14px + env(safe-area-inset-bottom));
+  }
+
+  .kami-confirm-actions {
+    width: 100%;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .kami-alert-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .kami-alert-bar .kami-btn-mini {
+    width: 100%;
+  }
+
+  .kami-doc-subtitle {
+    font-size: 11px;
+  }
+
+  .kami-sync-status {
+    max-width: 100%;
+  }
+
+  .account-avatar {
+    width: 48px;
+    height: 48px;
+  }
+
+  .kami-toast {
+    max-width: calc(100% - 32px);
+    text-align: center;
+  }
+
+  .kami-shell:has(.kami-annotation-drawer) .kami-toast {
+    bottom: calc(208px + env(safe-area-inset-bottom));
   }
 }

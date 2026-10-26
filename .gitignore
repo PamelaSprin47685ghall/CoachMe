@@ -22,8 +22,16 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 .env.production.local
 .env.local
 
+# Server credentials and private account data
+margintalk.config.toml
+data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
 # caches
 .eslintcache
+.svelte-check/
 .cache
 *.tsbuildinfo
 

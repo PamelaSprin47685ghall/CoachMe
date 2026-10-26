@@ -4,6 +4,8 @@ import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import remarkFrontmatter from 'remark-frontmatter';
 import remarkRehype from 'remark-rehype';
+import rehypeRaw from 'rehype-raw';
+import rehypeSanitize, { defaultSchema } from 'rehype-sanitize';
 import rehypeKatex from 'rehype-katex';
 import rehypeHighlight from 'rehype-highlight';
 import rehypeStringify from 'rehype-stringify';
@@ -14,6 +16,7 @@ export interface ChatTurn {
   id: string;
   role: 'user' | 'ai';
   content: string; // HTML or text for AI, text for user
+  reasoning?: string; // Optional reasoning/thinking process from AI
   pending?: boolean;
 }
 
@@ -159,8 +162,15 @@ export function resolveSafeOffset(
   markdown: string,
   rawOffset: number
 ): { offset: number; adjusted: boolean; reason?: string } {
+  return resolveOffsetUsingIntervals(markdown, rawOffset, getForbiddenIntervals(markdown));
+}
+
+function resolveOffsetUsingIntervals(
+  markdown: string,
+  rawOffset: number,
+  intervals: ForbiddenInterval[]
+): { offset: number; adjusted: boolean; reason?: string } {
   const clamped = Math.max(0, Math.min(markdown.length, Math.round(rawOffset)));
-  const intervals = getForbiddenIntervals(markdown);
 
   let offset = clamped;
   let adjusted = false;
@@ -193,7 +203,7 @@ export function resolveSafeOffset(
 
 /**
  * Format a single ClipAnnotation as the required semantic HTML `<aside>` block:
- * <aside class="annotation" data-clip="...">
+ * <aside class="annotation">
  *   <blockquote>
  *     <p>消息内容</p>
  *     <footer>用户</footer>
@@ -215,7 +225,7 @@ export function serializeClipToAsideHtml(
       blocks.push(
         [
           '  <blockquote>',
-          `    <p>${escapeHtmlText(msg.content)}</p>`,
+          `    <p>${escapeHtmlText(msg.content.trim())}</p>`,
           '    <footer>用户</footer>',
           '  </blockquote>'
         ].join('\n')
@@ -231,10 +241,14 @@ export function serializeClipToAsideHtml(
           ].join('\n')
         );
       } else {
+        const aiContent = msg.content.trim();
+        const wrappedAiContent = /<[a-z][\s\S]*>/i.test(aiContent)
+          ? aiContent
+          : `<p>${escapeHtmlText(aiContent)}</p>`;
         blocks.push(
           [
             '  <blockquote>',
-            `    ${msg.content.trim()}`,
+            `    ${wrappedAiContent}`,
             '    <footer>AI</footer>',
             '  </blockquote>'
           ].join('\n')
@@ -245,9 +259,11 @@ export function serializeClipToAsideHtml(
 
   // If the last message in this clip is from the user and hasn't been replied to yet
   const lastMsg = clip.messages[clip.messages.length - 1];
-  const needsTrailingPlaceholder =
-    (lastMsg && lastMsg.role === 'user') ||
-    (activePlaceholderClipId === clip.id && (!lastMsg || lastMsg.role === 'user'));
+  const needsTrailingPlaceholder = Boolean(
+    lastMsg &&
+      lastMsg.role === 'user' &&
+      (activePlaceholderClipId === undefined || activePlaceholderClipId === clip.id)
+  );
 
   if (needsTrailingPlaceholder) {
     blocks.push(
@@ -260,11 +276,11 @@ export function serializeClipToAsideHtml(
     );
   }
 
-  return `<aside class="annotation" data-clip="${escapeAttr(clip.id)}" data-color="${escapeAttr(clip.color)}">\n${blocks.join('\n')}\n</aside>`;
+  return `<aside class="annotation">\n${blocks.join('\n')}\n</aside>`;
 }
 
 /**
- * Build the full Markdown string with all `<aside class="annotation" data-clip="...">`
+ * Build the full Markdown string with all `<aside class="annotation">`
  * blocks inserted at their exact (minimal-avoidance adjusted) offsets in the original Markdown.
  * AI reads this Markdown directly!
  */
@@ -273,19 +289,23 @@ export function buildAnnotatedMarkdown(
   clips: ClipAnnotation[],
   activePlaceholderClipId?: string
 ): string {
-  if (clips.length === 0) return baseMarkdown;
+  const nonEmptyClips = clips.filter((c) => c.messages.length > 0);
+  if (nonEmptyClips.length === 0) return baseMarkdown;
 
-  // Sort in descending offset order so earlier offsets remain valid as we splice
-  const sorted = [...clips].sort((a, b) => b.offset - a.offset || b.createdAt - a.createdAt);
+  const intervals = getForbiddenIntervals(baseMarkdown);
+  const sorted = nonEmptyClips.map((clip) => ({
+    clip,
+    offset: resolveOffsetUsingIntervals(baseMarkdown, clip.offset, intervals).offset
+  })).sort((a, b) => a.offset - b.offset || a.clip.offset - b.clip.offset || a.clip.createdAt - b.clip.createdAt);
 
-  let result = baseMarkdown;
-  for (const clip of sorted) {
-    const safe = resolveSafeOffset(baseMarkdown, clip.offset).offset;
-    const asideHtml = serializeClipToAsideHtml(clip, activePlaceholderClipId);
-    result = result.slice(0, safe) + asideHtml + result.slice(safe);
+  const parts: string[] = [];
+  let previousOffset = 0;
+  for (const { clip, offset } of sorted) {
+    parts.push(baseMarkdown.slice(previousOffset, offset), serializeClipToAsideHtml(clip, activePlaceholderClipId));
+    previousOffset = offset;
   }
-
-  return result;
+  parts.push(baseMarkdown.slice(previousOffset));
+  return parts.join('');
 }
 
 /**
@@ -306,20 +326,34 @@ export function buildAiPrompt(
 
 ${annotatedMarkdown}
 
-请输出占位符 <!--AI_REPLY_PLACEHOLDER--> 处你的批注式回复。要求以轻度格式的 HTML 回复（例如可使用 <p>、<ul>、<li>、<strong>、<code>、<em> 等标签，不要包裹 \`\`\`html 代码块，也不要包含外层 <blockquote> 或 <footer>），直接输出占位符处的 HTML 内容，信息量要大、深入透彻。`;
+请结合全文和批注中的历史对话，回答回复占位符前用户的最新问题。只输出填入占位符的轻度格式 HTML 回复，信息量要大，不要代码围栏或外层批注标签。`;
 
-  return { prompt, annotatedMarkdown };
+  // Apply exactly one transport layer after composing the entire prompt.
+  // Keep annotatedMarkdown unchanged for document preview and export.
+  const escapedPrompt = escapeHtmlText(prompt)
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+  return { prompt: escapedPrompt, annotatedMarkdown };
 }
 
 /**
- * Parse any existing `<aside class="annotation" data-clip="...">...</aside>` blocks
+ * Parse any existing `<aside class="annotation">...</aside>` blocks
  * already embedded in a loaded Markdown file so re-opening annotated Markdown files works seamlessly.
  */
 export function extractEmbeddedClipsFromMarkdown(rawMarkdown: string): {
   cleanMarkdown: string;
   clips: ClipAnnotation[];
 } {
-  const asideRegex = /<aside\s+class="annotation"\s+data-clip="([^"]+)"(?:\s+data-color="([^"]+)")?\s*>([\s\S]*?)<\/aside>/g;
+  if (!rawMarkdown.includes('<aside')) return { cleanMarkdown: rawMarkdown, clips: [] };
+  const literalRanges: Array<{ start: number; end: number }> = [];
+  const tree = unified().use(remarkParse).use(remarkGfm).use(remarkMath).use(remarkFrontmatter, ['yaml', 'toml']).parse(rawMarkdown);
+  visit(tree, (node: Node) => {
+    if (!['code', 'inlineCode', 'math', 'inlineMath', 'yaml', 'toml'].includes(node.type)) return;
+    const start = node.position?.start.offset;
+    const end = node.position?.end.offset;
+    if (start !== undefined && end !== undefined) literalRanges.push({ start, end });
+  });
+  const asideRegex = /<aside\s+class="annotation"(?:\s+data-clip="([^"]*)")?(?:\s+data-color="([^"]*)")?\s*>([\s\S]*?)<\/aside>/g;
   const clips: ClipAnnotation[] = [];
   let cleanMarkdown = '';
   let lastIndex = 0;
@@ -328,8 +362,13 @@ export function extractEmbeddedClipsFromMarkdown(rawMarkdown: string): {
   const palette = ['#d97757', '#4a7c59', '#3d6b99', '#8e5ea2', '#c28b38', '#b85450'];
 
   while ((match = asideRegex.exec(rawMarkdown)) !== null) {
-    cleanMarkdown += rawMarkdown.slice(lastIndex, match.index);
-    const clipOffset = cleanMarkdown.length;
+    const matchStart = match.index;
+    const literal = literalRanges.find((range) => matchStart >= range.start && matchStart < range.end);
+    if (literal) {
+      asideRegex.lastIndex = literal.end;
+      continue;
+    }
+    const clipOffset = cleanMarkdown.length + match.index - lastIndex;
     const clipId = match[1] || `clip-${clips.length + 1}`;
     const clipColor = match[2] || palette[clips.length % palette.length]!;
     const innerHtml = match[3] || '';
@@ -338,7 +377,14 @@ export function extractEmbeddedClipsFromMarkdown(rawMarkdown: string): {
     const bqRegex = /<blockquote>([\s\S]*?)<footer>\s*(用户|AI)\s*<\/footer>\s*<\/blockquote>/g;
     let bqMatch: RegExpExecArray | null;
     let turnIdx = 0;
+    let lastBlockEnd = 0;
+    let recognized = true;
     while ((bqMatch = bqRegex.exec(innerHtml)) !== null) {
+      if (innerHtml.slice(lastBlockEnd, bqMatch.index).trim()) {
+        recognized = false;
+        break;
+      }
+      lastBlockEnd = bqRegex.lastIndex;
       const bodyRaw = (bqMatch[1] || '').trim();
       const speaker = bqMatch[2];
       if (bodyRaw.includes('<!--AI_REPLY_PLACEHOLDER-->')) continue;
@@ -358,7 +404,10 @@ export function extractEmbeddedClipsFromMarkdown(rawMarkdown: string): {
         });
       }
     }
+    // An ordinary HTML aside may share the class name; never remove unrelated document content.
+    if (!recognized || innerHtml.slice(lastBlockEnd).trim()) continue;
 
+    cleanMarkdown += rawMarkdown.slice(lastIndex, match.index);
     clips.push({
       id: clipId,
       color: clipColor,
@@ -425,10 +474,19 @@ export function renderMarkdownToHtml(baseMarkdown: string): {
     .use(remarkMath)
     .use(remarkFrontmatter, ['yaml', 'toml'])
     .use(remarkRehype, { allowDangerousHtml: true })
+    .use(rehypeRaw)
+    // Sanitize source HTML before trusted renderers add their own math/code styles.
+    .use(rehypeSanitize, {
+      ...defaultSchema,
+      attributes: {
+        ...defaultSchema.attributes,
+        code: [['className', /^language-./, 'math-inline', 'math-display']]
+      }
+    })
     .use(rehypeSourceOffsets)
     .use(rehypeKatex)
     .use(rehypeHighlight, { detect: true, ignoreMissing: true })
-    .use(rehypeStringify, { allowDangerousHtml: true })
+    .use(rehypeStringify)
     .processSync(baseMarkdown);
 
   return {
@@ -449,8 +507,4 @@ function unescapeHtmlText(str: string): string {
     .replace(/&lt;/g, '<')
     .replace(/&gt;/g, '>')
     .replace(/&amp;/g, '&');
-}
-
-function escapeAttr(str: string): string {
-  return str.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
 }
