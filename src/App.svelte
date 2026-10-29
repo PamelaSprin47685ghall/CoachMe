@@ -5,15 +5,21 @@
   import {
     renderMarkdownToHtml,
     buildAnnotatedMarkdown,
-    buildAiPrompt,
     getSnippetAround,
     resolveSafeOffset,
+    isLegacyHtmlReply,
     type ClipAnnotation
   } from './lib/markdown';
   import {
     resolveMarkdownOffsetFromPoint,
     mountPaperclipsIntoDom
   } from './lib/dom-mapper';
+  import {
+    longPress,
+    LONG_PRESS_DURATION_MS,
+    LONG_PRESS_GHOST_DELAY_MS,
+    MOVE_CANCEL_THRESHOLD_PX
+  } from './lib/long-press';
   import {
     ApiError,
     createDocument,
@@ -24,8 +30,13 @@
     logout as apiLogout,
     setCsrfToken,
     streamReply,
+    streamWikiDraft,
     updateDocument
   } from './lib/api-client';
+  import { streamPhaseOf } from './lib/stream-phase';
+  import SideDrawer from './components/SideDrawer.svelte';
+  import Composer from './components/Composer.svelte';
+  import AiStreamCard from './components/AiStreamCard.svelte';
   import type { CloudDocument, DocumentSummary, ReplyEvent, SessionInfo } from './lib/contracts';
   import {
     DEFAULT_SAMPLE_FILENAME,
@@ -112,6 +123,13 @@
     });
   }
 
+  /** AI annotation replies are light Markdown; legacy stored replies are light HTML. */
+  function renderAiReply(content: string): string {
+    return isLegacyHtmlReply(content)
+      ? sanitizeAiHtml(content)
+      : sanitizeDocumentHtml(renderMarkdownToHtml(content).html);
+  }
+
   /** Legacy browser-side AI credential storage from the pre-SaaS build. */
   const LEGACY_AI_STORAGE_KEYS = ['margintalk_ai_settings_v1', 'coachme_ai_settings_v1'];
   function purgeLegacyAiSettings(): void {
@@ -123,8 +141,6 @@
   }
 
   const POLL_INTERVAL_MS = 5000;
-  const LONG_PRESS_DURATION_MS = 520;
-  const MOVE_CANCEL_THRESHOLD_PX = 12;
 
   const AUTH_ERROR_MESSAGES: Record<string, string> = {
     access_denied: '您取消了 Amazon 授权，未登录。',
@@ -176,28 +192,11 @@
   const isCloudDocument = $derived(documentId !== null);
 
   // ---------------------------------------------------------------------------
-  // Cloud sync (sequential, revisioned annotation saves)
+  // Server is the single source of truth: the view only ever renders the last
+  // server snapshot. One mutation at a time; whatever the server answers
+  // (success, 409 snapshot, 404) replaces the view verbatim.
   // ---------------------------------------------------------------------------
-  let syncState = $state<'clean' | 'dirty' | 'saving' | 'error'>('clean');
-  let syncError = $state<string | null>(null);
-  let localClipSequence = $state<number>(0);
-  let saveInFlight = $state<boolean>(false);
-  let saveQueued = $state<boolean>(false);
-  /**
-   * An unresolved 409: the local snapshot and the server's version are kept
-   * apart, and only an explicit user choice (discard local, or overwrite the
-   * server with a warning) may reconcile them. Never advanced silently.
-   */
-  let conflict = $state<{
-    serverDocument: CloudDocument | null;
-  } | null>(null);
-  let conflictChoice = $state<'discard' | 'overwrite' | null>(null);
-  let resolvingConflict = $state<boolean>(false);
-  /** The cloud document vanished while local edits existed; work is retained. */
-  let documentMissing = $state<boolean>(false);
-  let savingCopyPending = $state<boolean>(false);
-
-  const hasUnsavedWork = $derived(documentId !== null && syncState !== 'clean');
+  let mutationPending = $state<boolean>(false);
 
   // ---------------------------------------------------------------------------
   // Library / account modals
@@ -210,13 +209,14 @@
   let openDocumentPending = $state<boolean>(false);
   let deletingDocumentId = $state<string | null>(null);
   let pendingDelete = $state<DocumentSummary | null>(null);
-  let savingSamplePending = $state<boolean>(false);
   let uploadingFiles = $state<boolean>(false);
 
   // ---------------------------------------------------------------------------
   // Long-press state for progressive 📎 placement
   // ---------------------------------------------------------------------------
   let isLongPressing = $state<boolean>(false);
+  /** The ghost 📎 only appears once the press has clearly been held (not a drag/scroll). */
+  let pressGhostVisible = $state<boolean>(false);
   let pressProgress = $state<number>(0); // 0..1
   let pressClientX = $state<number>(0);
   let pressClientY = $state<number>(0);
@@ -236,7 +236,6 @@
   // Reply stream (server is authoritative for the persisted user turn)
   // ---------------------------------------------------------------------------
   let draftInput = $state<string>('');
-  let lastSentPrompt = $state<string>('');
   /** A generation failure belongs to one clip only, never to the whole panel. */
   let replyError = $state<{ clipId: string; message: string } | null>(null);
 
@@ -253,6 +252,8 @@
     reasoning: string;
     text: string;
     draftCleared: boolean;
+    /** Raw composer text at send time, restored if the turn never reached the server. */
+    draft: string;
   } | null>(null);
   let replyAbort: AbortController | null = null;
 
@@ -263,18 +264,36 @@
       : null
   );
 
+  const replyPhase = $derived(streamPhaseOf(visibleReply));
+
+  // ---------------------------------------------------------------------------
+  // Encyclopedia drafting (left sidebar → streamed on the main reader)
+  // ---------------------------------------------------------------------------
+  let wikiPanelOpen = $state<boolean>(false);
+  let wikiPrompt = $state<string>('');
+  let wikiComposerFocused = $state<boolean>(false);
+  let wikiError = $state<string | null>(null);
+  let activeWiki = $state<{ prompt: string; reasoning: string; text: string } | null>(null);
+  let wikiAbort: AbortController | null = null;
+  let wikiReasoningEl: HTMLElement | undefined = $state();
+  const wikiPhase = $derived(streamPhaseOf(activeWiki));
+  const wikiPreviewHtml = $derived(
+    activeWiki?.text ? sanitizeDocumentHtml(renderMarkdownToHtml(activeWiki.text).html) : ''
+  );
+
   // ---------------------------------------------------------------------------
   // Modals / DOM refs
   // ---------------------------------------------------------------------------
-  let showMarkdownModal = $state<boolean>(false);
   let toastMessage = $state<string | null>(null);
   let toastTimer: number | null = null;
 
   let fileInputEl: HTMLInputElement | undefined = $state();
   let markdownContainerEl: HTMLElement | undefined = $state();
+  let readerPaneEl: HTMLElement | undefined = $state();
   let messagesScrollEl: HTMLElement | undefined = $state();
   let liveReasoningScrollEl: HTMLElement | undefined = $state();
   let composerTextareaEl: HTMLTextAreaElement | undefined = $state();
+  let composerFocused = $state(false);
   let f7Instance: Framework7 | null = null;
   let pollTimer: number | null = null;
 
@@ -284,53 +303,17 @@
   let renderedDoc = $derived(renderMarkdownToHtml(baseMarkdown));
   let sanitizedDocHtml = $derived(sanitizeDocumentHtml(renderedDoc.html));
   let activeClip = $derived(clips.find((c) => c.id === selectedClipId) ?? null);
-  let annotatedMarkdownPreview = $derived(
-    buildAnnotatedMarkdown(baseMarkdown, clips, selectedClipId ?? undefined)
-  );
-  let fullPromptPreview = $derived(
-    lastSentPrompt
-      ? lastSentPrompt
-      : selectedClipId
-        ? buildAiPrompt(baseMarkdown, clips, selectedClipId).prompt
-        : buildAnnotatedMarkdown(baseMarkdown, clips)
-  );
-  /** Anything that could replace or mutate view state must be idle first. */
+  /** Anything that could replace or mutate the server snapshot must be idle first. */
   const isBusy = $derived(
-    saveInFlight ||
+    mutationPending ||
       activeReply !== null ||
+      activeWiki !== null ||
       openDocumentPending ||
       uploadingFiles ||
-      savingSamplePending ||
-      deletingDocumentId !== null ||
-      resolvingConflict
+      deletingDocumentId !== null
   );
-  /**
-   * Operations that could swap the document under the reader. Unlike `isBusy`
-   * this deliberately ignores an in-flight annotation save, because placing a
-   * second 📎 while the first is still syncing is expected (it re-queues).
-   */
-  const viewChanging = $derived(
-    activeReply !== null ||
-      openDocumentPending ||
-      uploadingFiles ||
-      savingSamplePending ||
-      savingCopyPending ||
-      resolvingConflict
-  );
-  /**
-   * Annotation work needs a signed-in account, a persisted cloud document, no
-   * unresolved conflict/deletion and no in-flight generation (placements are
-   * forbidden while a reply runs so server snapshots never need to guess which
-   * local clips were speculative).
-   */
-  let canAnnotate = $derived(
-    signedIn &&
-      isCloudDocument &&
-      !viewChanging &&
-      conflict === null &&
-      !documentMissing
-  );
-  let switchingBlocked = $derived(hasUnsavedWork || isBusy || conflict !== null || documentMissing);
+  let canAnnotate = $derived(signedIn && isCloudDocument && !isBusy);
+  let switchingBlocked = $derived(isBusy);
 
   function showToast(msg: string, duration = 2600) {
     toastMessage = msg;
@@ -356,8 +339,6 @@
 
   interface ViewScope extends AccountScope {
     documentId: string | null;
-    clipSequence: number;
-    revision: number;
   }
 
   function captureAccount(): AccountScope {
@@ -367,9 +348,7 @@
   function captureView(): ViewScope {
     return {
       ...captureAccount(),
-      documentId,
-      clipSequence: localClipSequence,
-      revision: serverRevision
+      documentId
     };
   }
 
@@ -380,8 +359,7 @@
   function viewStillCurrent(started: ViewScope): boolean {
     return (
       accountStillCurrent(started) &&
-      documentId === started.documentId &&
-      localClipSequence === started.clipSequence
+      documentId === started.documentId
     );
   }
 
@@ -421,22 +399,18 @@
     }
   }
 
-  function clearConflictState(): void {
-    conflict = null;
-    conflictChoice = null;
-    resolvingConflict = false;
-  }
-
   function clearAccountData(reason: string | null): void {
     // Invalidate every in-flight request first, then drop all private state.
     accountEpoch += 1;
     session = session ? { ...session, user: null, csrfToken: null } : session;
     setCsrfToken(null);
     abortActiveReply();
+    abortActiveWiki();
+    wikiPanelOpen = false;
+    wikiPrompt = '';
+    wikiError = null;
     cancelLongPress();
-    clearConflictState();
-    documentMissing = false;
-    savingCopyPending = false;
+    mutationPending = false;
     libraryDocs = [];
     libraryError = null;
     libraryLoading = false;
@@ -445,10 +419,7 @@
     showAccountModal = false;
     openDocumentPending = false;
     uploadingFiles = false;
-    savingSamplePending = false;
-    saveQueued = false;
     draftInput = '';
-    lastSentPrompt = '';
     replyError = null;
     resetToSample();
     purgeLegacyAiSettings();
@@ -456,9 +427,6 @@
   }
 
   async function handleSignOut() {
-    if (hasUnsavedWork && !window.confirm('当前文档还有未保存到云端的批注，退出登录将丢失这些更改，确定退出吗？')) {
-      return;
-    }
     const started = captureAccount();
     try {
       await apiLogout();
@@ -477,12 +445,10 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Document state helpers
+  // Document view = last server snapshot
   // ---------------------------------------------------------------------------
   function resetToSample(): void {
     cancelLongPress();
-    clearConflictState();
-    documentMissing = false;
     documentId = null;
     documentName = DEFAULT_SAMPLE_FILENAME;
     baseMarkdown = DEFAULT_SAMPLE_MARKDOWN;
@@ -490,266 +456,105 @@
     serverRevision = 0;
     serverUpdatedAt = null;
     selectedClipId = null;
-    syncState = 'clean';
-    syncError = null;
-    saveQueued = false;
-    lastSentPrompt = '';
     replyError = null;
   }
 
-  function adoptCloudDocument(doc: CloudDocument): void {
-    cancelLongPress();
-    clearConflictState();
-    documentMissing = false;
-    documentId = doc.id;
-    documentName = doc.name;
-    baseMarkdown = doc.markdown;
-    clips = doc.clips;
-    serverRevision = doc.revision;
-    serverUpdatedAt = doc.updatedAt ?? Date.now();
-    selectedClipId = null;
-    syncState = 'clean';
-    syncError = null;
-    replyError = null;
-    lastSentPrompt = '';
-    saveQueued = false;
-  }
-
-  /**
-   * Adopt an authoritative snapshot exactly. The client never speculates about
-   * clips: placements and deletions are forbidden while a reply or a save is in
-   * flight, so an empty local clip that another session deleted can never be
-   * resurrected by a poll or a stream event.
-   */
+  /** Render a server snapshot verbatim, keeping the open 📎 if it still exists. */
   function applyAuthoritativeSnapshot(doc: CloudDocument): void {
     cancelLongPress();
     documentId = doc.id;
     documentName = doc.name;
     baseMarkdown = doc.markdown;
+    clips = doc.clips;
     serverRevision = doc.revision;
     serverUpdatedAt = doc.updatedAt ?? Date.now();
-    clips = doc.clips;
     if (selectedClipId && !clips.some((c) => c.id === selectedClipId)) selectedClipId = null;
   }
 
-  // ---------------------------------------------------------------------------
-  // Sequential revisioned cloud saves
-  // ---------------------------------------------------------------------------
-  function markDirtyAndSave(): void {
-    if (documentId === null) return; // Sample / un-persisted document has nothing to sync yet.
-    localClipSequence += 1;
-    if (documentMissing || conflict !== null) {
-      // Held locally on purpose: sending now would either resurrect a deleted
-      // document or clobber the version we are being asked to reconcile.
-      syncState = 'error';
-      syncError = documentMissing
-        ? '云端文档已被删除，本地批注已保留，可导出或另存为新的云端文档。'
-        : '云端版本冲突尚未解决，新的本地修改暂存于浏览器，请先选择如何处理冲突。';
-      return;
+  /** Switch the view to another server document. */
+  function adoptCloudDocument(doc: CloudDocument): void {
+    selectedClipId = null;
+    replyError = null;
+    applyAuthoritativeSnapshot(doc);
+  }
+
+  /** The open document is gone on the server: leave it, nothing local survives. */
+  function dropMissingDocument(id: string): void {
+    const goneName = documentName;
+    libraryDocs = libraryDocs.filter((d) => d.id !== id);
+    if (documentId === id) resetToSample();
+    showToast(`云端文档「${goneName}」已被删除或不再可用。`);
+  }
+
+  /** Re-read the open document; used whenever a request leaves us unsure. */
+  async function reloadActiveDocument(): Promise<void> {
+    const started = captureView();
+    if (started.documentId === null || started.userId === null) return;
+    try {
+      const doc = await getDocument(started.documentId);
+      if (viewStillCurrent(started)) applyAuthoritativeSnapshot(doc);
+    } catch (err) {
+      if (!viewStillCurrent(started)) return;
+      if (err instanceof ApiError && err.notFound) dropMissingDocument(started.documentId);
+      else if (err instanceof ApiError && err.unauthorized) handle401(err.message);
     }
-    syncState = 'dirty';
-    syncError = null;
-    void runSaveQueue();
   }
 
   /**
-   * One save at a time, always against the newest known revision, carrying the
-   * whole annotation snapshot. Mutations that land while a request is in flight
-   * (or while the AI generation still holds the document busy) are re-queued
-   * instead of dropped. A 409 is never retried automatically: it becomes an
-   * explicit conflict the user resolves.
+   * Converge on the server after a failed request against the open document:
+   * a 409 carries the current snapshot, a 404 closes the document, anything
+   * else triggers a refetch. The client never merges or retries on its own.
    */
-  async function runSaveQueue(): Promise<void> {
-    if (documentId === null || documentMissing) return;
-    if (conflict !== null) return; // Resolution is a user decision, not a retry.
-    if (saveInFlight) {
-      saveQueued = true;
+  function recoverFromServerError(err: unknown, started: ViewScope, fallback: string): void {
+    if (!accountStillCurrent(started)) return;
+    if (err instanceof ApiError && err.unauthorized) {
+      handle401(err.message);
       return;
     }
-    // The server rejects PUT while its reply generation is pending, so defer.
-    if (activeReply !== null) {
-      saveQueued = true;
-      return;
-    }
-    saveInFlight = true;
-    try {
-      do {
-        saveQueued = false;
-        syncState = 'saving';
-        syncError = null;
-        const started = captureView();
-        const clipsAtSend = clips;
-        const currentDocumentId = started.documentId as string;
-        try {
-          const doc = await updateDocument(currentDocumentId, started.revision, clipsAtSend);
-          if (!accountStillCurrent(started)) return; // signed out / 401 mid-save
-          if (documentId !== currentDocumentId) return; // view moved on
-          serverRevision = doc.revision;
-          serverUpdatedAt = doc.updatedAt ?? Date.now();
-          if (started.clipSequence === localClipSequence) {
-            // Nothing changed locally during the round-trip: adopt verbatim.
-            documentName = doc.name;
-            baseMarkdown = doc.markdown;
-            clips = doc.clips;
-            if (selectedClipId && !doc.clips.some((c) => c.id === selectedClipId)) {
-              selectedClipId = null;
-            }
-          } else {
-            saveQueued = true; // newer local snapshot wins the next round
-          }
-        } catch (err) {
-          saveQueued = false;
-          if (!accountStillCurrent(started)) return;
-          if (err instanceof ApiError && err.unauthorized) {
-            syncState = 'error';
-            syncError = err.message;
-            handle401(err.message);
-            return;
-          }
-          if (documentId !== currentDocumentId) return;
-          if (err instanceof ApiError && err.notFound) {
-            // Keep the local document and clips; offer export / save-as-new /
-            // discard instead of silently throwing away unsynced work.
-            clearConflictState();
-            documentMissing = true;
-            syncState = 'error';
-            syncError = '云端文档已不存在（可能被其他会话删除）。本地批注已保留，可导出或另存为新的云端文档。';
-            libraryDocs = libraryDocs.filter((d) => d.id !== currentDocumentId);
-            return;
-          }
-          syncState = 'error';
-          if (err instanceof ApiError && err.conflict) {
-            // Divergence: never advance our revision on our own.
-            documentMissing = false;
-            conflict = {
-              serverDocument:
-                err.document && err.document.id === currentDocumentId ? err.document : null
-            };
-            syncError = `云端版本已被其他会话更新（${err.message}）。请选择「放弃本地 · 加载云端」或「以本地批注覆盖云端」来解决冲突；本地未同步批注已保留。`;
-          } else {
-            conflict = null;
-            syncError = describeApiError(err, '批注保存失败，请重试。');
-          }
-          break;
-        }
-      } while (saveQueued);
-      if (syncState === 'saving') syncState = 'clean';
-    } finally {
-      saveInFlight = false;
-      if (saveQueued && documentId !== null && activeReply === null && conflict === null && !documentMissing) {
-        void runSaveQueue();
-      }
+    if (!viewStillCurrent(started) || started.documentId === null) return;
+    if (err instanceof ApiError && err.notFound) {
+      dropMissingDocument(started.documentId);
+    } else if (err instanceof ApiError && err.document?.id === started.documentId) {
+      applyAuthoritativeSnapshot(err.document);
+      showToast(`${describeApiError(err, fallback)}，已显示云端最新版本。`);
+    } else {
+      showToast(describeApiError(err, fallback));
+      void reloadActiveDocument();
     }
   }
 
-  function retryCloudSave(): void {
-    if (documentId === null || conflict !== null || documentMissing || isBusy) return;
-    syncState = 'dirty';
-    saveQueued = true;
-    void runSaveQueue();
-  }
-
-  function askConflictChoice(choice: 'discard' | 'overwrite'): void {
-    if (conflict === null) return;
-    conflictChoice = choice;
-  }
-
-  async function applyConflictChoice(): Promise<void> {
-    const choice = conflictChoice;
-    if (choice === null || conflict === null || documentId === null) return;
-    conflictChoice = null;
+  /**
+   * Send the next clip list to the server and render its answer. Returns the
+   * server snapshot, or null when the server did not accept the change.
+   */
+  async function commitClips(nextClips: ClipAnnotation[]): Promise<CloudDocument | null> {
     const started = captureView();
-    resolvingConflict = true;
+    if (started.documentId === null || mutationPending) return null;
+    mutationPending = true;
     try {
-      // The user explicitly asked for the server's version, or explicitly
-      // agreed to overwrite it; either way we need its current revision.
-      const serverDoc =
-        conflict.serverDocument ?? (await getDocument(started.documentId as string));
-      if (!viewStillCurrent(started)) return;
-      if (choice === 'discard') {
-        applyAuthoritativeSnapshot(serverDoc);
-        clearConflictState();
-        syncState = 'clean';
-        syncError = null;
-        showToast('已加载云端最新版本，本地未同步的批注修改已放弃。');
-      } else {
-        serverRevision = serverDoc.revision;
-        clearConflictState();
-        syncState = 'dirty';
-        syncError = null;
-        saveQueued = true;
-        void runSaveQueue();
-        showToast('已按您的选择以本地批注覆盖云端版本。');
-      }
+      const doc = await updateDocument(started.documentId, serverRevision, nextClips);
+      if (!viewStillCurrent(started)) return null;
+      applyAuthoritativeSnapshot(doc);
+      return doc;
     } catch (err) {
-      if (!accountStillCurrent(started)) return;
-      syncError = describeApiError(err, '冲突处理失败，请稍后重试。');
-      showToast(syncError);
+      recoverFromServerError(err, started, '批注保存失败');
+      return null;
     } finally {
-      if (accountStillCurrent(started)) resolvingConflict = false;
+      if (accountStillCurrent(started)) mutationPending = false;
     }
   }
 
-  function exportAnnotatedMarkdownFile() {
-    const fullMd = buildAnnotatedMarkdown(baseMarkdown, clips);
-    const blob = new Blob([fullMd], { type: 'text/markdown;charset=utf-8' });
+  /** Save Markdown to the user's device; clips are embedded as `<aside>` so a re-import restores them. */
+  function downloadMarkdownFile(name: string, markdown: string, clipsToEmbed: ClipAnnotation[]): void {
+    const blob = new Blob([buildAnnotatedMarkdown(markdown, clipsToEmbed)], {
+      type: 'text/markdown;charset=utf-8'
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = documentName.replace(/\.md$/i, '') + '.annotated.md';
+    a.download = `${name.replace(/\.md$/i, '') || 'document'}.md`;
     a.click();
-    URL.revokeObjectURL(url);
-    showToast('已导出带 <aside> 批注语义的 Markdown 文件');
-  }
-
-  /** Recover a deleted cloud document by uploading the local snapshot as a new one. */
-  async function saveLocalCopyAsNewDocument(): Promise<void> {
-    const started = captureView();
-    if (started.userId === null || savingCopyPending) return;
-    const name = documentName;
-    savingCopyPending = true;
-    try {
-      const doc = await createDocument(name, baseMarkdown);
-      if (!viewStillCurrent(started)) return;
-      // The AI/export representation omits empty clips; recover the actual snapshot instead.
-      // Keep local clips while moving to the new resource, so a failed PUT remains retryable.
-      documentId = doc.id;
-      documentName = doc.name;
-      serverRevision = doc.revision;
-      serverUpdatedAt = doc.updatedAt;
-      documentMissing = false;
-      clearConflictState();
-      lastSentPrompt = '';
-      replyError = null;
-      syncState = 'dirty';
-      syncError = null;
-      localClipSequence += 1;
-      await runSaveQueue();
-      if (!accountStillCurrent(started) || documentId !== doc.id) return;
-      showToast(
-        !hasUnsavedWork
-          ? `已将本地批注副本另存为云端文档「${doc.name}」`
-          : '新文档已创建，本地批注仍保留，请完成剩余的云同步。'
-      );
-      void refreshLibrary();
-    } catch (err) {
-      if (!accountStillCurrent(started)) return;
-      if (err instanceof ApiError && err.unauthorized) handle401(err.message);
-      else showToast(describeApiError(err, '另存为新的云端文档失败。'));
-    } finally {
-      if (accountStillCurrent(started)) savingCopyPending = false;
-    }
-  }
-
-  function discardLocalCopy(): void {
-    if (
-      !window.confirm('确定放弃本地未同步的批注副本，返回示例文档吗？')
-    ) {
-      return;
-    }
-    resetToSample();
-    showToast('已放弃本地副本。');
-    void refreshLibrary();
+    window.setTimeout(() => URL.revokeObjectURL(url), 0);
   }
 
   // ---------------------------------------------------------------------------
@@ -780,19 +585,39 @@
     void refreshLibrary();
   }
 
+  /** Long-press on a library row: download that document with its clips embedded. */
+  async function downloadCloudDocument(doc: DocumentSummary): Promise<void> {
+    // The open document may hold clips not yet synced; the local view is the freshest copy.
+    if (doc.id === documentId) {
+      downloadMarkdownFile(documentName, baseMarkdown, clips);
+      showToast(`已下载「${documentName}」`);
+      return;
+    }
+    const started = captureAccount();
+    showToast(`正在下载「${doc.name}」…`);
+    try {
+      const full = await getDocument(doc.id);
+      if (!accountStillCurrent(started)) return;
+      downloadMarkdownFile(full.name, full.markdown, full.clips);
+      showToast(`已下载「${full.name}」`);
+    } catch (err) {
+      if (!accountStillCurrent(started)) return;
+      if (err instanceof ApiError && err.notFound) {
+        libraryDocs = libraryDocs.filter((d) => d.id !== doc.id);
+        showToast('该文档已不存在，列表已刷新。');
+      } else if (err instanceof ApiError && err.unauthorized) {
+        handle401(err.message);
+      } else {
+        showToast(describeApiError(err, '下载云端文档失败，请稍后重试。'));
+      }
+    }
+  }
+
   async function openCloudDocument(doc: DocumentSummary) {
     const started = captureView();
     if (started.userId === null) return;
     if (switchingBlocked) {
-      showToast(
-        conflict !== null
-          ? '请先处理云端版本冲突。'
-          : documentMissing
-            ? '请先导出或另存已删除文档的本地副本。'
-            : hasUnsavedWork
-              ? '当前文档有未保存的批注，请先完成同步。'
-              : '正在上传/保存/生成，请稍候。'
-      );
+      showToast('正在上传/保存/生成，请稍候。');
       return;
     }
     if (doc.id === documentId) {
@@ -829,12 +654,8 @@
       showToast('AI 正在生成批注，暂不可删除文档。');
       return;
     }
-    if (openDocumentPending || uploadingFiles || savingSamplePending || savingCopyPending) {
-      showToast('正在上传/打开文档，暂不可删除。');
-      return;
-    }
-    if (doc.id === documentId && (hasUnsavedWork || conflict !== null || documentMissing)) {
-      showToast('当前文档有未保存或未解决的批注修改，请先处理。');
+    if (isBusy) {
+      showToast('正在上传/保存/打开文档，暂不可删除。');
       return;
     }
     pendingDelete = doc;
@@ -875,28 +696,6 @@
     }
   }
 
-  async function saveSampleToCloud() {
-    const started = captureView();
-    if (started.userId === null || savingSamplePending || switchingBlocked) return;
-    savingSamplePending = true;
-    try {
-      const doc = await createDocument(documentName || DEFAULT_SAMPLE_FILENAME, baseMarkdown);
-      if (!viewStillCurrent(started)) return;
-      // The sample must still be what the user is looking at.
-      if (documentId !== null) return;
-      adoptCloudDocument(doc);
-      showLibraryModal = false;
-      showToast(`已将「${doc.name}」保存到云端 📎`);
-      void refreshLibrary();
-    } catch (err) {
-      if (!accountStillCurrent(started)) return;
-      if (err instanceof ApiError && err.unauthorized) handle401(err.message);
-      else showToast(describeApiError(err, '保存示例文档到云端失败。'));
-    } finally {
-      if (accountStillCurrent(started)) savingSamplePending = false;
-    }
-  }
-
   // ---------------------------------------------------------------------------
   // Native Markdown picker → automatic cloud upload
   // ---------------------------------------------------------------------------
@@ -918,7 +717,7 @@
 
     const started = captureView();
     if (started.userId === null) return;
-    if (openDocumentPending || savingSamplePending || savingCopyPending) return;
+    if (openDocumentPending || mutationPending) return;
 
     uploadingFiles = true;
     let uploaded: CloudDocument | null = null;
@@ -975,18 +774,17 @@
     const target = event.target as HTMLElement | null;
     if (!target || !markdownContainerEl) return;
 
-    // Ignore if user clicked on an existing 📎 paperclip badge
-    if (target.closest('.clip-anchor-pin')) {
+    // Ignore if user clicked on an existing 📎 paperclip badge or live-generation chrome
+    if (target.closest('.clip-anchor-pin') || target.closest('[data-no-annotate]')) {
       return;
     }
 
     if (!canAnnotate) {
       if (!signedIn) showToast('登录后才能批注云端文档。');
-      else if (conflict !== null) showToast('请先处理云端版本冲突，再放置曲别针。');
-      else if (documentMissing) showToast('云端文档已删除，请先另存为新文档再批注。');
+      else if (activeWiki) showToast('AI 正在撰写百科条目，完成后即可长按批注。');
       else if (isRequestingAi) showToast('AI 正在生成批注，完成后方可放置或删除曲别针。');
       else if (isBusy) showToast('正在同步/上传，请稍候。');
-      else showToast('请先上传或保存文档到云端，再进行批注。');
+      else showToast('请先在「云端文档库」打开 Markdown 文件，或用「百科条目撰写」生成文档，再进行批注。');
       return;
     }
 
@@ -998,7 +796,8 @@
     pressClientX = event.clientX;
     pressClientY = event.clientY;
     pressStartTime = performance.now();
-    pressProgress = 0.06;
+    pressProgress = 0;
+    pressGhostVisible = false;
     isLongPressing = true;
     pressDocumentId = documentId;
     pressAccountEpoch = accountEpoch;
@@ -1015,7 +814,12 @@
     const updateProgress = () => {
       if (!isLongPressing) return;
       const elapsed = performance.now() - pressStartTime;
-      pressProgress = Math.min(1, elapsed / LONG_PRESS_DURATION_MS);
+      if (elapsed >= LONG_PRESS_GHOST_DELAY_MS) pressGhostVisible = true;
+      // The visible ring fills over the time the ghost is actually shown.
+      pressProgress = Math.min(
+        1,
+        Math.max(0.06, (elapsed - LONG_PRESS_GHOST_DELAY_MS) / (LONG_PRESS_DURATION_MS - LONG_PRESS_GHOST_DELAY_MS))
+      );
       if (pressProgress < 1) {
         pressRafId = window.requestAnimationFrame(updateProgress);
       }
@@ -1023,7 +827,7 @@
     pressRafId = window.requestAnimationFrame(updateProgress);
 
     pressTimerId = window.setTimeout(() => {
-      finalizePaperclipPlacement();
+      void finalizePaperclipPlacement();
     }, LONG_PRESS_DURATION_MS);
   }
 
@@ -1054,6 +858,7 @@
 
   function cancelLongPress() {
     isLongPressing = false;
+    pressGhostVisible = false;
     pressProgress = 0;
     if (pressTimerId !== null) {
       window.clearTimeout(pressTimerId);
@@ -1065,12 +870,12 @@
     }
   }
 
-  function finalizePaperclipPlacement() {
+  async function finalizePaperclipPlacement(): Promise<void> {
     const pressDocument = pressDocumentId;
     cancelLongPress();
     suppressNextClick = true;
 
-    // The view may have moved (document switch, account purge, conflict, a new
+    // The view may have moved (document switch, account purge, a server refresh, a new
     // generation) while the ring was filling: never place into a stale view.
     if (
       pressDocument === null ||
@@ -1098,9 +903,9 @@
     const wasAdjusted = pressAdjustedInfo.adjusted;
     const adjustReason = pressAdjustedInfo.reason;
 
-    clips = [...clips, newClip];
+    const saved = await commitClips([...clips, newClip]);
+    if (!saved?.clips.some((c) => c.id === newClipId)) return;
     selectedClipId = newClipId;
-    markDirtyAndSave();
 
     if (wasAdjusted) {
       showToast(`已遵循最小避让原则微调位置（避开 ${adjustReason || '公式/语法边界'}）并放置 📎`);
@@ -1144,17 +949,10 @@
     switch (event.type) {
       case 'document': {
         if (event.document.id === documentId) applyAuthoritativeSnapshot(event.document);
-        lastSentPrompt = event.prompt;
-        // The user turn is now provably persisted: drop the draft exactly once,
-        // and only if the composer still holds exactly what was sent.
+        // The user turn is now provably persisted: the draft (already cleared
+        // on send) no longer needs to be restored on failure.
         const stream = activeReply;
-        if (stream && !stream.draftCleared) {
-          stream.draftCleared = true;
-          if (draftInput === stream.content) {
-            draftInput = '';
-            if (composerTextareaEl) composerTextareaEl.value = '';
-          }
-        }
+        if (stream && !stream.draftCleared) stream.draftCleared = true;
         void tick().then(() => scrollToBottomOfMessages());
         break;
       }
@@ -1175,6 +973,7 @@
       }
       case 'error': {
         const failedClipId = activeReply?.clipId ?? null;
+        if (activeReply) restoreUnsentDraft(activeReply);
         if (event.document && event.document.id === documentId) {
           applyAuthoritativeSnapshot(event.document);
         }
@@ -1190,20 +989,23 @@
     }
   }
 
+  /** Put an unsent question back into an empty composer (never overwrite newer typing). */
+  function restoreUnsentDraft(stream: { draftCleared: boolean; draft: string }): void {
+    if (stream.draftCleared || !stream.draft.trim() || draftInput.trim()) return;
+    stream.draftCleared = true;
+    draftInput = stream.draft;
+  }
+
   async function handleSendAnnotation() {
     const rawText = composerTextareaEl ? composerTextareaEl.value : draftInput;
+    // Empty input is allowed: the server then lets the AI annotate on its own.
     const content = rawText.trim();
-    if (!content || !selectedClipId || !documentId || activeReply) return;
+    if (!selectedClipId || !documentId || activeReply) return;
 
     const targetClipId = selectedClipId;
     const targetDocumentId = documentId;
-    if (conflict !== null || documentMissing) {
-      showToast('请先处理云端版本冲突或删除文档的本地副本。');
-      return;
-    }
-    if (syncState !== 'clean') {
-      showToast('批注尚未同步到云端，已自动开始同步，请稍候再发送。');
-      retryCloudSave();
+    if (mutationPending) {
+      showToast('正在保存到云端，请稍候再发送。');
       return;
     }
     if (!aiConfigured) {
@@ -1215,16 +1017,20 @@
     }
 
     replyError = null;
-    // The draft is deliberately kept until the server proves it persisted the
-    // user turn; a pre-stream rejection must not erase a typed question.
+    // Clear the composer as soon as the turn is sent; if the server never
+    // persists it (pre-stream rejection), the typed text is put back.
     activeReply = {
       documentId: targetDocumentId,
       clipId: targetClipId,
       content,
       reasoning: '',
       text: '',
-      draftCleared: false
+      draftCleared: false,
+      draft: rawText
     };
+    const sentStream = activeReply;
+    draftInput = '';
+    if (composerTextareaEl) composerTextareaEl.value = '';
     const controller = new AbortController();
     replyAbort = controller;
 
@@ -1235,97 +1041,157 @@
     try {
       await streamReply({
         documentId: targetDocumentId,
-        revision: started.revision,
+        revision: serverRevision,
         clipId: targetClipId,
         content,
         signal: controller.signal,
         onEvent: handleReplyEvent
       });
     } catch (err) {
-      if (controller.signal.aborted) {
-        activeReply = null;
-      } else if (err instanceof ApiError && err.unauthorized) {
-        activeReply = null;
-        handle401(err.message);
-        return;
-      } else {
-        if (
-          err instanceof ApiError &&
-          err.document &&
-          accountStillCurrent(started) &&
-          err.document.id === documentId
-        ) {
-          applyAuthoritativeSnapshot(err.document);
-        }
-        // A deleted document must not stay silently “open” for further sends.
-        if (
-          err instanceof ApiError &&
-          err.notFound &&
-          accountStillCurrent(started) &&
-          documentId === targetDocumentId
-        ) {
-          documentMissing = true;
-          syncState = 'error';
-          syncError = '云端文档已不存在（可能被其他会话删除）。本地批注已保留，可导出或另存为新的云端文档。';
-          libraryDocs = libraryDocs.filter((d) => d.id !== targetDocumentId);
-        }
-        activeReply = null;
+      activeReply = null;
+      if (controller.signal.aborted) return;
+      if (!(err instanceof ApiError && err.unauthorized)) restoreUnsentDraft(sentStream);
+      if (!(err instanceof ApiError && err.unauthorized) && viewStillCurrent(started)) {
         replyError = {
           clipId: targetClipId,
           message: describeApiError(err, 'AI 批注生成失败，请重新发送批注。')
         };
       }
+      recoverFromServerError(err, started, 'AI 批注生成失败');
     } finally {
       if (replyAbort === controller) replyAbort = null;
-      // Annotations queued during generation can now be flushed.
-      if (
-        documentId !== null &&
-        accountStillCurrent(started) &&
-        syncState !== 'clean' &&
-        conflict === null &&
-        !documentMissing
-      ) {
-        void runSaveQueue();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Encyclopedia drafting
+  // ---------------------------------------------------------------------------
+  function isMobileLayout(): boolean {
+    return window.matchMedia('(max-width: 640px)').matches;
+  }
+
+  function toggleWikiPanel(): void {
+    if (wikiPanelOpen) {
+      wikiPanelOpen = false;
+      return;
+    }
+    // Phones show one overlay drawer at a time.
+    if (isMobileLayout()) selectedClipId = null;
+    wikiPanelOpen = true;
+  }
+
+  function abortActiveWiki(): void {
+    if (wikiAbort) {
+      wikiAbort.abort();
+      wikiAbort = null;
+    }
+    activeWiki = null;
+  }
+
+  function restoreWikiPrompt(prompt: string): void {
+    if (!wikiPrompt.trim()) wikiPrompt = prompt;
+  }
+
+  function cancelWikiDraft(): void {
+    const prompt = activeWiki?.prompt ?? '';
+    abortActiveWiki();
+    restoreWikiPrompt(prompt);
+    wikiPanelOpen = true;
+    showToast('已停止撰写百科条目，提示已保留，可修改后重新发送。');
+  }
+
+  async function handleWikiSubmit(): Promise<void> {
+    const brief = wikiPrompt.trim();
+    if (!brief || activeWiki) return;
+    if (!signedIn) {
+      showToast('登录云端账户后即可撰写百科条目。');
+      showAccountModal = true;
+      return;
+    }
+    if (!aiConfigured) {
+      wikiError = '服务端尚未配置 AI，暂时无法撰写百科条目。';
+      return;
+    }
+    if (isBusy) {
+      showToast('正在上传/保存/生成，请稍候。');
+      return;
+    }
+
+    wikiError = null;
+    wikiPanelOpen = false; // auto-close: the generation streams on the main reader
+    wikiComposerFocused = false;
+    selectedClipId = null;
+    cancelLongPress();
+    activeWiki = { prompt: brief, reasoning: '', text: '' };
+    wikiPrompt = ''; // clear the input on send; restored if generation fails
+    const controller = new AbortController();
+    wikiAbort = controller;
+    const started = captureAccount();
+    void tick().then(() => readerPaneEl?.scrollTo({ top: 0 }));
+
+    try {
+      await streamWikiDraft({
+        prompt: brief,
+        signal: controller.signal,
+        onEvent: (event) => {
+          if (wikiAbort !== controller || !accountStillCurrent(started)) return;
+          switch (event.type) {
+            case 'reasoning':
+              if (activeWiki) activeWiki.reasoning += event.delta;
+              void tick().then(() => {
+                if (wikiReasoningEl) wikiReasoningEl.scrollTop = wikiReasoningEl.scrollHeight;
+              });
+              break;
+            case 'text':
+              if (activeWiki) activeWiki.text += event.delta;
+              break;
+            case 'done':
+              activeWiki = null;
+              abortActiveReply();
+              adoptCloudDocument(event.document);
+              void refreshLibrary();
+              showToast(
+                `已生成并保存百科条目「${event.document.name.replace(/\.md$/i, '')}」，长按段落即可放置 📎 批注`,
+                4200
+              );
+              break;
+            case 'error':
+              wikiError = event.error?.message?.trim() || 'AI 百科条目生成失败，请重试。';
+              restoreWikiPrompt(brief);
+              activeWiki = null;
+              break;
+            default:
+              break;
+          }
+        }
+      });
+    } catch (err) {
+      if (controller.signal.aborted || !accountStillCurrent(started)) return;
+      if (err instanceof ApiError && err.unauthorized) {
+        handle401(err.message);
+        return;
+      }
+      wikiError = describeApiError(err, 'AI 百科条目生成失败，请重试。');
+      restoreWikiPrompt(brief);
+    } finally {
+      if (wikiAbort === controller) {
+        wikiAbort = null;
+        activeWiki = null;
       }
     }
   }
 
-  function handleComposerKeydown(event: KeyboardEvent) {
-    if (
-      event.key === 'Enter' &&
-      !event.shiftKey &&
-      !event.isComposing &&
-      event.keyCode !== 229
-    ) {
-      event.preventDefault();
-      handleSendAnnotation();
-    }
-  }
-
-  function removeCurrentClip() {
-    if (!selectedClipId) return;
-    if (activeReply !== null) {
-      showToast('AI 正在生成批注，文档已锁定，暂不可移除曲别针。');
-      return;
-    }
-    if (conflict !== null || documentMissing) {
-      showToast(
-        conflict !== null
-          ? '请先处理云端版本冲突。'
-          : '云端文档已删除，请先另存为新文档。'
-      );
-      return;
-    }
+  async function removeCurrentClip(): Promise<void> {
     const idToRemove = selectedClipId;
-    clips = clips.filter((c) => c.id !== idToRemove);
-    selectedClipId = null;
-    if (replyError?.clipId === idToRemove) replyError = null;
-    if (documentId !== null) {
-      markDirtyAndSave();
-      showToast('已移除该枚曲别针批注，正在同步云端…');
-    } else {
-      showToast('已移除该枚曲别针批注');
+    if (!idToRemove || documentId === null) return;
+    if (isBusy) {
+      showToast('正在保存或生成，请稍候再移除曲别针。');
+      return;
     }
+    const saved = await commitClips(clips.filter((c) => c.id !== idToRemove));
+    if (!saved || saved.clips.some((c) => c.id === idToRemove)) return;
+    if (replyError?.clipId === idToRemove) replyError = null;
+    showToast('已移除该枚曲别针批注');
   }
 
   function scrollToBottomOfMessages() {
@@ -1341,34 +1207,19 @@
   // Polling: only when clean and nothing is in flight
   // ---------------------------------------------------------------------------
   async function pollActiveDocument(): Promise<void> {
+    if (documentId === null || isBusy || document.visibilityState !== 'visible') return;
+    const revisionAtStart = serverRevision;
     const started = captureView();
-    if (started.documentId === null || started.userId === null) return;
-    if (isBusy || syncState !== 'clean' || conflict !== null || documentMissing) return;
-    if (document.visibilityState !== 'visible') return;
     try {
       const doc = await getDocument(started.documentId as string);
-      if (
-        !viewStillCurrent(started) ||
-        serverRevision !== started.revision ||
-        syncState !== 'clean' ||
-        isBusy
-      ) {
-        return;
-      }
-      if (doc.revision !== started.revision) applyAuthoritativeSnapshot(doc);
-      else serverUpdatedAt = doc.updatedAt ?? serverUpdatedAt;
+      // A mutation that landed meanwhile already rendered a newer snapshot.
+      if (!viewStillCurrent(started) || isBusy || serverRevision !== revisionAtStart) return;
+      applyAuthoritativeSnapshot(doc);
     } catch (err) {
-      if (!viewStillCurrent(started) || syncState !== 'clean' || isBusy) return;
-      if (err instanceof ApiError && err.notFound) {
-        // Clean view: nothing local to lose, so returning to the sample is safe.
-        const goneName = documentName;
-        libraryDocs = libraryDocs.filter((d) => d.id !== started.documentId);
-        resetToSample();
-        showToast(`云端文档「${goneName}」已被删除或不再可用。`);
-      } else if (err instanceof ApiError && err.unauthorized) {
-        handle401(err.message);
-      }
-      // Other transient errors are retried on the next tick; local work is safe.
+      if (!viewStillCurrent(started) || isBusy) return;
+      if (err instanceof ApiError && err.notFound) dropMissingDocument(started.documentId as string);
+      else if (err instanceof ApiError && err.unauthorized) handle401(err.message);
+      // Transient errors: the next tick asks the server again.
     }
   }
 
@@ -1382,16 +1233,12 @@
 
   const syncStatusLabel = $derived.by(() => {
     if (documentId === null) return '本地示例 · 未上传';
-    if (documentMissing) return '云端文档已删除 · 本地已保留';
-    if (conflict !== null) return '云端版本冲突 · 待处理';
-    if (syncState === 'saving') return '正在保存批注到云端…';
-    if (syncState === 'dirty') return '有未保存的批注';
-    if (syncState === 'error') return '保存失败，点击重试';
+    if (mutationPending) return '正在保存到云端…';
     return `已同步 · 版本 ${serverRevision} · ${formatTime(serverUpdatedAt)}`;
   });
 
   function handleBeforeUnload(event: BeforeUnloadEvent) {
-    if (hasUnsavedWork || isRequestingAi || uploadingFiles || documentMissing || conflict !== null) {
+    if (mutationPending || isRequestingAi || activeWiki !== null || uploadingFiles) {
       event.preventDefault();
       event.returnValue = '';
     }
@@ -1417,12 +1264,40 @@
     window.addEventListener('beforeunload', handleBeforeUnload);
   });
 
+  // Track the *visible* viewport (above the soft keyboard) so the mobile annotation
+  // drawer can be sized to it and the composer + send button stay on screen.
+  onMount(() => {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement;
+    let frame = 0;
+    const sync = () => {
+      frame = 0;
+      root.style.setProperty('--vv-height', `${Math.round(vv.height)}px`);
+      root.style.setProperty('--vv-top', `${Math.round(vv.offsetTop)}px`);
+    };
+    const schedule = () => {
+      if (!frame) frame = requestAnimationFrame(sync);
+    };
+    sync();
+    vv.addEventListener('resize', schedule);
+    vv.addEventListener('scroll', schedule);
+    return () => {
+      vv.removeEventListener('resize', schedule);
+      vv.removeEventListener('scroll', schedule);
+      if (frame) cancelAnimationFrame(frame);
+      root.style.removeProperty('--vv-height');
+      root.style.removeProperty('--vv-top');
+    };
+  });
+
   $effect(() => {
     return () => {
       if (pollTimer !== null) window.clearInterval(pollTimer);
       window.removeEventListener('beforeunload', handleBeforeUnload);
       cancelLongPress();
       if (replyAbort) replyAbort.abort();
+      if (wikiAbort) wikiAbort.abort();
       if (toastTimer !== null) window.clearTimeout(toastTimer);
     };
   });
@@ -1481,55 +1356,26 @@
           <span
             class="kami-sync-status"
             data-testid="sync-status"
-            data-sync-state={documentId === null
-              ? 'local'
-              : conflict !== null || documentMissing
-                ? 'conflict'
-                : syncState}
-            title={syncError ?? syncStatusLabel}
+            data-sync-state={documentId === null ? 'local' : mutationPending ? 'saving' : 'clean'}
+            title={syncStatusLabel}
           >{syncStatusLabel}</span>
         </span>
       </div>
     </div>
 
     <div class="kami-toolbar-actions">
-      {#if documentId !== null && syncState === 'error' && conflict === null && !documentMissing}
-        <button
-          type="button"
-          class="kami-btn kami-btn-danger"
-          data-testid="retry-sync-btn"
-          onclick={retryCloudSave}
-          disabled={isBusy}
-        >
-          <span aria-hidden="true">↻</span>
-          <span class="toolbar-label-wide">重试保存</span>
-          <span class="toolbar-label-compact">重试</span>
-        </button>
-      {:else if documentId === null && signedIn && !showLibraryModal}
-        <button
-          type="button"
-          class="kami-btn"
-          data-testid="save-sample-btn"
-          onclick={saveSampleToCloud}
-          disabled={switchingBlocked}
-          title="将当前示例文档保存到您的云端文档库"
-        >
-          <span aria-hidden="true">☁️</span>
-          <span class="toolbar-label-wide">保存到云端</span>
-          <span class="toolbar-label-compact">存云端</span>
-        </button>
-      {/if}
-
       <button
         type="button"
         class="kami-btn kami-btn-primary"
-        data-testid="open-file-btn"
-        onclick={openMarkdownFileDialog}
-        disabled={uploadingFiles || openDocumentPending || savingSamplePending || savingCopyPending}
+        class:is-active={wikiPanelOpen}
+        data-testid="open-wiki-btn"
+        aria-pressed={wikiPanelOpen}
+        onclick={toggleWikiPanel}
+        title="百科条目撰写：AI 按任意提示自拟标题与正文（仿 Wikipedia 体裁）"
       >
-        <span aria-hidden="true">📂</span>
-        <span class="toolbar-label-wide">{uploadingFiles ? '上传中…' : '打开 Markdown 文件'}</span>
-        <span class="toolbar-label-compact">{uploadingFiles ? '上传中' : '打开文件'}</span>
+        <span aria-hidden="true">📚</span>
+        <span class="toolbar-label-wide">{activeWiki ? '条目撰写中…' : '百科条目撰写'}</span>
+        <span class="toolbar-label-compact">{activeWiki ? '撰写中' : '百科'}</span>
       </button>
 
       <button
@@ -1543,17 +1389,6 @@
         <span aria-hidden="true">🗂️</span>
         <span class="toolbar-label-wide">云端文档库</span>
         <span class="toolbar-label-compact">文档库</span>
-      </button>
-
-      <button
-        type="button"
-        class="kami-btn"
-        data-testid="preview-annotated-md-btn"
-        onclick={() => (showMarkdownModal = true)}
-      >
-        <span aria-hidden="true">🔍</span>
-        <span class="toolbar-label-wide">查看批注源文</span>
-        <span class="toolbar-label-compact">批注源文</span>
       </button>
 
       {#if signedIn}
@@ -1602,10 +1437,68 @@
   <!-- Main Workspace: Left Reader + Right Annotation Drawer -->
   <main class="kami-workspace">
     <!-- Left Column: Markdown Reader -->
+    {#if wikiPanelOpen}
+      <SideDrawer
+        side="left"
+        testid="left-wiki-panel"
+        backdropTestid="mobile-wiki-backdrop"
+        closeTestid="close-wiki-btn"
+        closeLabel="关闭百科条目撰写"
+        closeTitle="隐藏左栏"
+        compact={wikiComposerFocused}
+        bodyTestid="wiki-panel-body"
+        onclose={() => (wikiPanelOpen = false)}
+      >
+        {#snippet title()}
+          <span>📚 百科条目撰写</span>
+        {/snippet}
+        {#snippet subheader()}
+          <div class="drawer-anchor-preview">仿 Wikipedia 文章体裁 · AI 自拟标题与正文 · 完成后自动存入云端</div>
+        {/snippet}
+        {#snippet body()}
+          <div class="drawer-empty-state" data-testid="wiki-panel-hint">
+            <div style="font-size: 28px; margin-bottom: 8px;">📚</div>
+            <div>输入任意提示：一个主题词、一句需求、一段素材或写作要求都可以。</div>
+            <div>发送后本栏自动收起，主界面会实时显示 AI 的思考过程与条目 Markdown；完成后即成为当前云端文档，可直接长按放置 📎 继续批注对话。</div>
+          </div>
+          {#if wikiError}
+            <div class="chat-bubble-card kami-error-bubble" role="alert" data-testid="wiki-error">
+              {wikiError}
+            </div>
+          {/if}
+        {/snippet}
+        {#snippet footer()}
+          <Composer
+            bind:value={wikiPrompt}
+            bind:focused={wikiComposerFocused}
+            placeholder="例如：量子纠缠；或「写一篇关于宋代活字印刷的条目，侧重技术演变」。Enter 换行，Ctrl+Enter 发送..."
+            ariaLabel="百科条目撰写提示"
+            inputTestid="wiki-prompt-input"
+            sendTestid="wiki-submit-btn"
+            sendLabel={activeWiki ? '撰写中...' : '撰写条目'}
+            disabled={activeWiki !== null}
+            sendDisabled={!wikiPrompt.trim() || !signedIn || isBusy}
+            onsend={() => void handleWikiSubmit()}
+          >
+            {#snippet tip()}
+              {#if !signedIn}
+                🔒 登录后可撰写百科条目
+              {:else if !aiConfigured}
+                🤖 服务端未配置 AI
+              {:else}
+                AI 自拟标题 · Wikipedia 体裁 · 自动存入云端
+              {/if}
+            {/snippet}
+          </Composer>
+        {/snippet}
+      </SideDrawer>
+    {/if}
+
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <section
+      bind:this={readerPaneEl}
       class="kami-reader-pane"
       data-testid="left-reader-pane"
       onpointerdown={handleDocPointerDown}
@@ -1615,20 +1508,13 @@
       onclick={handleDocClick}
     >
       <article class="kami-paper-sheet" data-testid="markdown-paper-sheet">
-        <div class="kami-sheet-meta">
-          <span>MarginTalk · Markdown &amp; KaTeX</span>
-          <span class="kami-sheet-hint">
-            {#if bootLoading}
-              ⏳ 正在读取登录状态…
-            {:else if !signedIn}
-              🔒 访客模式：仅可浏览示例文档，登录后可上传与批注
-            {:else if !isCloudDocument}
-              💾 示例文档未保存到云端，长按不可批注，请点击「保存到云端」
-            {:else}
-              💡 鼠标长按任意段落放置彩色 📎 曲别针 · 点击空白处隐藏右栏
-            {/if}
-          </span>
-        </div>
+        <!-- The sample document explains usage itself; only real (cloud or
+             in-progress wiki) documents get the short long-press reminder. -->
+        {#if isCloudDocument || activeWiki}
+          <div class="kami-sheet-meta" data-testid="sheet-tip">
+            <span class="kami-sheet-hint">💡 长按任意段落别上 📎 曲别针 · 点击空白处收起右栏</span>
+          </div>
+        {/if}
 
         {#if authBanner}
           <div class="kami-alert-bar" data-testid="auth-error-banner" role="status">
@@ -1664,95 +1550,72 @@
           </div>
         {/if}
 
-        {#if conflict !== null}
-          <div class="kami-alert-bar" data-testid="conflict-panel" role="alert">
-            <span class="kami-alert-text">⚠️ {syncError}</span>
-            <div class="kami-confirm-actions">
+        {#if activeWiki && wikiPhase !== 'replying'}
+          <div class="wiki-live" data-testid="wiki-live" data-no-annotate>
+            <div class="wiki-live-head">
+              <div class="wiki-live-prompt" title={activeWiki.prompt}>📚 百科条目撰写 · 提示：{activeWiki.prompt}</div>
               <button
                 type="button"
                 class="kami-btn kami-btn-mini"
-                data-testid="export-local-md-btn"
-                onclick={exportAnnotatedMarkdownFile}
+                data-testid="wiki-cancel-btn"
+                onclick={cancelWikiDraft}
               >
-                导出本地批注
-              </button>
-              <button
-                type="button"
-                class="kami-btn kami-btn-mini"
-                data-testid="reload-server-version-btn"
-                onclick={() => askConflictChoice('discard')}
-                disabled={resolvingConflict}
-              >
-                放弃本地 · 加载云端
-              </button>
-              <button
-                type="button"
-                class="kami-btn kami-btn-mini kami-btn-danger"
-                data-testid="overwrite-server-btn"
-                onclick={() => askConflictChoice('overwrite')}
-                disabled={resolvingConflict}
-              >
-                以本地覆盖云端
+                停止生成
               </button>
             </div>
-            {#if conflictChoice !== null}
-              <div class="kami-confirm-panel kami-confirm-panel-inline" data-testid="conflict-choice-confirm">
-                <div class="kami-confirm-text">
-                  {conflictChoice === 'discard'
-                    ? '确定放弃本地未同步的曲别针批注，改用云端最新版本吗？'
-                    : '确定用本地曲别针批注覆盖云端版本吗？其他会话在该版本之后新增的批注将被丢弃。'}
-                </div>
-                <div class="kami-confirm-actions">
-                  <button
-                    type="button"
-                    class="kami-btn kami-btn-mini"
-                    data-testid="cancel-conflict-choice-btn"
-                    onclick={() => (conflictChoice = null)}
-                  >
-                    取消
-                  </button>
-                  <button
-                    type="button"
-                    class="kami-btn kami-btn-mini kami-btn-danger"
-                    data-testid="confirm-conflict-choice-btn"
-                    onclick={() => void applyConflictChoice()}
-                  >
-                    {conflictChoice === 'discard' ? '确认放弃本地' : '确认覆盖云端'}
-                  </button>
-                </div>
-              </div>
-            {/if}
+            <AiStreamCard
+              heading="📚 AI 百科条目"
+              phase={wikiPhase}
+              reasoning={activeWiki.reasoning}
+              idleText="正在构思条目标题与章节结构…"
+              testid="wiki-live-card"
+              reasoningTestid="wiki-live-reasoning"
+              extraClass="wiki-live-card"
+              bind:reasoningEl={wikiReasoningEl}
+            >
+              {#snippet content()}{/snippet}
+            </AiStreamCard>
           </div>
-        {:else if documentMissing}
-          <div class="kami-alert-bar" data-testid="document-missing-panel" role="alert">
-            <span class="kami-alert-text">🗑️ {syncError}</span>
+        {:else if wikiError}
+          <div class="kami-alert-bar" role="alert" data-testid="wiki-error-banner" data-no-annotate>
+            <span class="kami-alert-text">📚 {wikiError}</span>
             <div class="kami-confirm-actions">
-              <button
-                type="button"
-                class="kami-btn kami-btn-mini"
-                data-testid="export-local-md-btn"
-                onclick={exportAnnotatedMarkdownFile}
-              >
-                导出本地批注
-              </button>
               <button
                 type="button"
                 class="kami-btn kami-btn-mini kami-btn-primary"
-                data-testid="save-copy-as-new-btn"
-                onclick={() => void saveLocalCopyAsNewDocument()}
-                disabled={savingCopyPending || !signedIn}
+                data-testid="wiki-retry-btn"
+                onclick={() => (wikiPanelOpen = true)}
               >
-                {savingCopyPending ? '保存中…' : '另存为新的云端文档'}
+                返回修改提示
               </button>
               <button
                 type="button"
                 class="kami-btn kami-btn-mini"
-                data-testid="discard-local-btn"
-                onclick={discardLocalCopy}
+                onclick={() => (wikiError = null)}
               >
-                放弃本地副本
+                知道了
               </button>
             </div>
+          </div>
+        {/if}
+
+        {#if activeWiki && wikiPhase === 'replying'}
+          <!-- Body streams with the exact reader markup/typography of the finished
+               document, so the switch to the saved document causes no layout jump. -->
+          <div class="kami-markdown-body" data-testid="wiki-live-markdown" aria-busy="true">
+            {@html wikiPreviewHtml}
+          </div>
+          <div class="wiki-stop-fab" data-testid="wiki-live-status" data-no-annotate>
+            <span class="thinking-live-badge">撰写中</span>
+            <span class="wiki-stop-fab-text">AI 正在撰写百科条目…</span>
+            <button
+              type="button"
+              class="kami-btn kami-btn-mini"
+              data-testid="wiki-cancel-btn"
+              onclick={cancelWikiDraft}
+            >
+              停止生成
+            </button>
           </div>
         {/if}
 
@@ -1760,6 +1623,7 @@
           bind:this={markdownContainerEl}
           class="kami-markdown-body"
           data-testid="markdown-rendered-body"
+          hidden={activeWiki !== null}
         >
           {@html sanitizedDocHtml}
         </div>
@@ -1768,77 +1632,54 @@
 
     <!-- Right Column: Conversational Annotation Panel (Hidden by default) -->
     {#if activeClip}
-      <button
-        type="button"
-        class="mobile-annotation-backdrop"
-        data-testid="mobile-annotation-backdrop"
-        aria-label="关闭批注，返回正文"
-        onclick={() => (selectedClipId = null)}
-      ></button>
-      <aside
-        class="kami-annotation-drawer"
-        data-testid="right-annotation-panel"
-        style="--clip-accent: {activeClip.color}"
+      {@const clip = activeClip}
+      <SideDrawer
+        side="right"
+        testid="right-annotation-panel"
+        backdropTestid="mobile-annotation-backdrop"
+        closeTestid="close-drawer-btn"
+        closeLabel="关闭批注"
+        closeTitle="隐藏右栏"
+        compact={composerFocused}
+        style="--clip-accent: {clip.color}"
+        bodyTestid="annotation-messages-list"
+        bind:bodyEl={messagesScrollEl}
+        onclose={() => (selectedClipId = null)}
       >
-        <div class="drawer-header">
-          <div class="drawer-header-top">
-            <div class="drawer-clip-badge">
-              <span
-                class="drawer-color-dot"
-                style="background-color: {activeClip.color}"
-              ></span>
-              <span>📎 对话式批注</span>
-              <span class="drawer-clip-meta">
-                (#{activeClip.id.slice(-5)} · 偏移 {activeClip.offset})
-              </span>
-            </div>
-
-            <div class="drawer-header-actions">
-              <button
-                type="button"
-                class="kami-btn"
-                data-testid="delete-clip-btn"
-                onclick={removeCurrentClip}
-                disabled={isRequestingAi || conflict !== null || documentMissing || saveInFlight}
-                title={isRequestingAi
-                  ? 'AI 生成期间文档被锁定，暂不能移除曲别针'
-                  : '移除此枚曲别针'}
-              >
-                删除 📎
-              </button>
-              <button
-                type="button"
-                class="kami-btn"
-                data-testid="close-drawer-btn"
-                aria-label="关闭批注"
-                onclick={() => (selectedClipId = null)}
-                title="隐藏右栏"
-              >
-                ✕
-              </button>
-            </div>
+        {#snippet title()}
+          <span class="drawer-color-dot" style="background-color: {clip.color}"></span>
+          <span>📎 对话式批注</span>
+          <span class="drawer-clip-meta">(#{clip.id.slice(-5)} · 偏移 {clip.offset})</span>
+        {/snippet}
+        {#snippet actions()}
+          <button
+            type="button"
+            class="kami-btn"
+            data-testid="delete-clip-btn"
+            onclick={removeCurrentClip}
+            disabled={isBusy}
+            title={isRequestingAi
+              ? 'AI 生成期间文档被锁定，暂不能移除曲别针'
+              : '移除此枚曲别针'}
+          >
+            删除 📎
+          </button>
+        {/snippet}
+        {#snippet subheader()}
+          <div class="drawer-anchor-preview" data-testid="drawer-anchor-snippet" title={clip.anchorSnippet}>
+            锚点：{clip.anchorSnippet}
           </div>
-
-          <div class="drawer-anchor-preview" data-testid="drawer-anchor-snippet" title={activeClip.anchorSnippet}>
-            锚点：{activeClip.anchorSnippet}
-          </div>
-        </div>
-
-        <!-- Messages List -->
-        <div
-          bind:this={messagesScrollEl}
-          class="drawer-messages"
-          data-testid="annotation-messages-list"
-        >
-          {#if activeClip.messages.length === 0 && !visibleReply}
+        {/snippet}
+        {#snippet body()}
+          {#if clip.messages.length === 0 && !visibleReply}
             <div class="drawer-empty-state" data-testid="drawer-empty-hint">
               <div style="font-size: 28px; margin-bottom: 8px;">📎</div>
-              <div>曲别针已别在文档第 <strong>{activeClip.offset}</strong> 字符处。</div>
-              <div>在下方输入你的批注或疑问，AI 将通读全文并在该曲别针位置给出高信息量批注回复。</div>
+              <div>曲别针已别在文档第 <strong>{clip.offset}</strong> 字符处。</div>
+              <div>在下方输入你的批注或疑问，AI 将通读全文并在该曲别针位置给出高信息量批注回复；也可以直接点「AI」，让它自己批注，每点一次生成一条。</div>
             </div>
           {/if}
 
-          {#each activeClip.messages as msg (msg.id)}
+          {#each clip.messages as msg (msg.id)}
             {#if msg.role === 'user'}
               <div class="chat-bubble-card chat-bubble-user" data-testid="chat-turn-user">
                 <div class="chat-role-header">
@@ -1850,62 +1691,38 @@
               <div class="chat-bubble-card chat-bubble-ai" data-testid="chat-turn-ai">
                 <div class="chat-role-header">
                   <span>🤖 AI 深度批注</span>
-                  <span>HTML</span>
+                  <span>Markdown</span>
                 </div>
-                {#if msg.reasoning}
-                  <details class="chat-reasoning-details" data-testid="chat-turn-reasoning">
-                    <summary class="chat-reasoning-summary">
-                      <span>💭 思考过程（点击展开/收起）</span>
-                    </summary>
-                    <div class="chat-reasoning-body" data-testid="chat-reasoning-text">{msg.reasoning}</div>
-                  </details>
-                {/if}
                 <div class="chat-ai-html-content" data-testid="chat-ai-html">
-                  {@html sanitizeAiHtml(msg.content)}
+                  {@html renderAiReply(msg.content)}
                 </div>
               </div>
             {/if}
           {/each}
 
           {#if visibleReply}
-            <div class="chat-bubble-card chat-bubble-ai" data-testid="chat-ai-loading">
-              <div class="chat-role-header">
-                <span>🤖 AI 正在旁征博引生成批注...</span>
-                {#if visibleReply.reasoning}
-                  <span class="thinking-live-badge">思考中</span>
-                {/if}
-              </div>
-              {#if visibleReply.reasoning}
-                <div class="chat-reasoning-live" data-testid="chat-ai-loading-reasoning">
-                  <div class="chat-reasoning-live-title">💭 实时思考过程：</div>
-                  <div
-                    bind:this={liveReasoningScrollEl}
-                    class="chat-reasoning-body"
-                    data-testid="chat-ai-loading-reasoning-body"
-                  >{visibleReply.reasoning}</div>
+            <AiStreamCard
+              heading="🤖 AI 深度批注"
+              phase={replyPhase}
+              reasoning={visibleReply.reasoning}
+              idleText="正在通读全文与曲别针上下文…"
+              testid="chat-ai-loading"
+              reasoningTestid="chat-ai-loading-reasoning"
+              bind:reasoningEl={liveReasoningScrollEl}
+            >
+              {#snippet content()}
+                <div class="chat-ai-html-content" data-testid="chat-ai-loading-reply">
+                  {@html renderAiReply(visibleReply?.text ?? '')}
                 </div>
-              {:else}
-                <div style="color: var(--kami-ink-muted); font-size: 13px;">
-                  正在读取全文与 <code>&lt;!--AI_REPLY_PLACEHOLDER--&gt;</code> 上下文...
-                </div>
-              {/if}
-              {#if visibleReply.text}
-                <div
-                  class="chat-ai-html-content"
-                  style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--kami-border);"
-                  data-testid="chat-ai-loading-reply"
-                >
-                  {visibleReply.text}
-                </div>
-              {/if}
-            </div>
+              {/snippet}
+            </AiStreamCard>
           {:else if isRequestingAi}
             <div class="kami-inline-note" data-testid="chat-ai-streaming-elsewhere">
               🤖 另一枚曲别针正在生成 AI 批注…（点击该曲别针可查看实时进度）
             </div>
           {/if}
 
-          {#if replyError && replyError.clipId === activeClip.id && !visibleReply}
+          {#if replyError && replyError.clipId === clip.id && !visibleReply}
             <div
               class="chat-bubble-card kami-error-bubble"
               data-testid="chat-ai-error"
@@ -1913,7 +1730,7 @@
             >
               <div>{replyError.message}</div>
               <div class="kami-error-hint">
-                {#if activeClip.messages.some((m) => m.role === 'user')}
+                {#if clip.messages.some((m) => m.role === 'user')}
                   您的批注已保存在曲别针对话中；如需重试，请在下方重新发送。
                 {:else}
                   您的批注尚未保存，可直接在下方重新发送。
@@ -1921,61 +1738,54 @@
               </div>
             </div>
           {/if}
-        </div>
-
-        <!-- Bottom Input Composer -->
-        <div class="drawer-composer">
-          <textarea
-            bind:this={composerTextareaEl}
-            class="composer-textarea"
-            data-testid="annotation-input"
-            aria-label="批注内容"
-            placeholder="在此输入批注内容，按 Enter 发送（Shift+Enter 换行）..."
+        {/snippet}
+        {#snippet footer()}
+          <Composer
             bind:value={draftInput}
+            bind:textarea={composerTextareaEl}
+            bind:focused={composerFocused}
+            placeholder="输入批注或问题（可留空让 AI 自行批注），Enter 换行，Ctrl+Enter 或点 AI 生成..."
+            ariaLabel="批注内容"
+            inputTestid="annotation-input"
+            sendTestid="send-annotation-btn"
+            sendLabel={isRequestingAi
+              ? 'AI 生成中'
+              : draftInput.trim()
+                ? 'AI：发送批注并生成回复'
+                : 'AI：自动批注（生成一条）'}
+            sendClass="kami-btn-ai{isRequestingAi ? ' is-generating' : ''}"
+            sendTitle={draftInput.trim()
+              ? '发送批注，AI 生成一条回复（Ctrl+Enter）'
+              : '输入为空：AI 自行在此处批注一条，可连续点击（Ctrl+Enter）'}
             disabled={isRequestingAi}
-            onkeydown={handleComposerKeydown}
-          ></textarea>
-          <div class="composer-footer">
-            <span class="composer-tip">
-              {#if conflict !== null}
-                ⚠️ 云端版本冲突，请先在左栏处理
-              {:else if documentMissing}
-                🗑️ 云端文档已删除，本地批注可导出或另存
-              {:else if syncState === 'saving' || syncState === 'dirty'}
-                ⏳ 曲别针同步中，同步完成后即可发送
-              {:else if syncState === 'error'}
-                ⚠️ 批注同步失败，请先「重试保存」
+            sendDisabled={
+              isRequestingAi ||
+              mutationPending ||
+              openDocumentPending ||
+              uploadingFiles
+            }
+            onsend={handleSendAnnotation}
+          >
+            {#snippet sendContent()}
+              <span class="ai-glyph" aria-hidden="true">AI</span>
+            {/snippet}
+            {#snippet tip()}
+              {#if mutationPending}
+                ⏳ 正在保存到云端…
               {:else if !aiConfigured}
                 🤖 服务端未配置 AI
               {:else}
                 单次全文 Markdown + &lt;aside&gt; 注入
               {/if}
-            </span>
-            <button
-              type="button"
-              class="kami-btn kami-btn-primary"
-              data-testid="send-annotation-btn"
-              disabled={
-                !draftInput.trim() ||
-                isRequestingAi ||
-                syncState !== 'clean' ||
-                conflict !== null ||
-                documentMissing ||
-                openDocumentPending ||
-                uploadingFiles
-              }
-              onclick={handleSendAnnotation}
-            >
-              {isRequestingAi ? '生成中...' : '发送批注'}
-            </button>
-          </div>
-        </div>
-      </aside>
+            {/snippet}
+          </Composer>
+        {/snippet}
+      </SideDrawer>
     {/if}
   </main>
 
   <!-- Progressive Long-press Ghost Paperclip 📎 -->
-  {#if isLongPressing}
+  {#if isLongPressing && pressGhostVisible}
     <div
       class="longpress-ghost-clip"
       data-testid="longpress-ghost-clip"
@@ -2013,6 +1823,16 @@
         <div class="kami-modal-header">
           <span>🗂️ 云端文档库</span>
           <div class="kami-modal-actions">
+            <button
+              type="button"
+              class="kami-btn kami-btn-primary"
+              data-testid="open-file-btn"
+              onclick={openMarkdownFileDialog}
+              disabled={uploadingFiles || openDocumentPending || mutationPending}
+              title="选择本地 Markdown 文件（可多选），自动上传到云端文档库"
+            >
+              📂 {uploadingFiles ? '上传中…' : '打开 Markdown 文件'}
+            </button>
             <button
               type="button"
               class="kami-btn"
@@ -2060,22 +1880,11 @@
                   class="kami-btn kami-btn-primary"
                   data-testid="upload-from-library-btn"
                   onclick={openMarkdownFileDialog}
-                  disabled={uploadingFiles || openDocumentPending || savingSamplePending}
+                  disabled={uploadingFiles || openDocumentPending}
                 >
-                  {uploadingFiles ? '上传中…' : '选择 Markdown 文件上传'}
+                  {uploadingFiles ? '上传中…' : '打开 Markdown 文件'}
                 </button>
               </div>
-              {#if documentId === null}
-                <button
-                  type="button"
-                  class="kami-btn"
-                  data-testid="save-sample-btn"
-                  onclick={saveSampleToCloud}
-                  disabled={switchingBlocked}
-                >
-                  ☁️ 将当前示例文档保存到云端
-                </button>
-              {/if}
             </div>
           {:else}
             <ul class="library-list" data-testid="library-list">
@@ -2086,7 +1895,17 @@
                   data-document-id={doc.id}
                   class:is-active={doc.id === documentId}
                 >
-                  <div class="library-row-main">
+                  <!-- svelte-ignore a11y_click_events_have_key_events -->
+                  <!-- svelte-ignore a11y_no_static_element_interactions -->
+                  <div
+                    class="library-row-main"
+                    data-testid="cloud-document-row-body"
+                    title="点击打开 · 长按下载 Markdown"
+                    use:longPress={{ onLongPress: () => void downloadCloudDocument(doc) }}
+                    onclick={() => {
+                      if (!switchingBlocked) void openCloudDocument(doc);
+                    }}
+                  >
                     <span class="library-row-name" title={doc.name}>📄 {doc.name}</span>
                     <span class="library-row-meta">
                       <span>更新：{formatTime(doc.updatedAt)}</span>
@@ -2132,14 +1951,10 @@
             {/if}
             {#if switchingBlocked}
               <div class="kami-inline-note" data-testid="library-switch-locked">
-                {#if conflict !== null}
-                  云端版本冲突待处理，处理完成后方可切换或删除文档。
-                {:else if documentMissing}
-                  云端文档已删除，本地副本待导出或另存，完成后方可切换文档。
-                {:else if hasUnsavedWork}
-                  当前文档存在未保存到云端的批注，同步完成后方可切换或删除文档。
-                {:else if uploadingFiles || savingSamplePending || openDocumentPending}
+                {#if uploadingFiles || openDocumentPending}
                   正在上传或打开文档，完成后方可切换或删除文档。
+                {:else if mutationPending}
+                  正在保存到云端，完成后方可切换或删除文档。
                 {:else}
                   AI 正在生成批注，完成后方可切换或删除文档。
                 {/if}
@@ -2265,54 +2080,6 @@
               🔑 使用 Amazon 登录
             </a>
           {/if}
-        </div>
-      </div>
-    </div>
-  {/if}
-
-  <!-- Annotated Markdown & AI Prompt Inspection Modal -->
-  {#if showMarkdownModal}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div
-      class="kami-modal-backdrop"
-      data-testid="markdown-modal-backdrop"
-      onclick={(e) => {
-        if (e.target === e.currentTarget) showMarkdownModal = false;
-      }}
-    >
-      <div class="kami-modal-card" style="max-width: 720px;" data-testid="markdown-modal">
-        <div class="kami-modal-header">
-          <span>📜 批注源文</span>
-          <div class="kami-modal-actions">
-            <button
-              type="button"
-              class="kami-btn"
-              onclick={exportAnnotatedMarkdownFile}
-            >
-              💾 导出 Markdown
-            </button>
-            <button
-              type="button"
-              class="kami-btn"
-              data-testid="close-markdown-modal-btn"
-              onclick={() => (showMarkdownModal = false)}
-            >
-              关闭
-            </button>
-          </div>
-        </div>
-
-        <div class="kami-modal-body">
-          <div style="font-size: 12.5px; color: var(--kami-ink-secondary);">
-            AI 只读 Markdown 原文，所有曲别针均以语义化 HTML <code>&lt;aside class="annotation"&gt;</code> 精确嵌入对应位置（遵循最小避让原则，不破坏数学公式等结构）：
-          </div>
-          <pre class="kami-code-preview" data-testid="annotated-markdown-code">{annotatedMarkdownPreview}</pre>
-
-          <div style="font-size: 12.5px; color: var(--kami-ink-secondary);">
-            发送给 AI 的完整单轮 Prompt 预览：
-          </div>
-          <pre class="kami-code-preview" data-testid="ai-prompt-preview-code">{fullPromptPreview}</pre>
         </div>
       </div>
     </div>

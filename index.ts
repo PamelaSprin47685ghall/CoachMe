@@ -10,7 +10,7 @@ const server = Bun.serve({
   hostname: config.host,
   port: config.port,
   maxRequestBodySize: 4 * 1024 * 1024,
-  idleTimeout: 120,
+  idleTimeout: 255, // Bun max; SSE replies also send a ping every 15s
   fetch: createRuntimeFetch(application.fetch, resolve(import.meta.dir, 'dist'), config.publicURL),
   error() {
     return Response.json({ error: { code: 'internal_error', message: '服务器暂时无法处理请求。' } }, { status: 500 });

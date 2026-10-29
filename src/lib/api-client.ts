@@ -364,15 +364,42 @@ export async function streamReply(params: {
   onEvent: (event: ReplyEvent) => void;
 }): Promise<void> {
   const { documentId, revision, clipId, content, signal, onEvent } = params;
+  return streamEvents(
+    `/api/documents/${encodeURIComponent(documentId)}/reply`,
+    { revision, clipId, content },
+    signal,
+    onEvent
+  );
+}
 
+/**
+ * Ask the server to draft a Wikipedia-style encyclopedia article for `prompt`.
+ * Streams `reasoning` / `text` deltas; the terminal `done` event carries the
+ * newly created cloud document holding the finished Markdown.
+ */
+export async function streamWikiDraft(params: {
+  prompt: string;
+  signal: AbortSignal;
+  onEvent: (event: ReplyEvent) => void;
+}): Promise<void> {
+  return streamEvents('/api/wiki-drafts', { prompt: params.prompt }, params.signal, params.onEvent);
+}
+
+/** Shared SSE POST reader for every AI generation endpoint. */
+async function streamEvents(
+  url: string,
+  payload: unknown,
+  signal: AbortSignal,
+  onEvent: (event: ReplyEvent) => void
+): Promise<void> {
   let response: Response;
   try {
-    response = await fetch(`/api/documents/${encodeURIComponent(documentId)}/reply`, {
+    response = await fetch(url, {
       method: 'POST',
       credentials: 'same-origin',
       cache: 'no-store',
       headers: mutationHeaders(),
-      body: JSON.stringify({ revision, clipId, content }),
+      body: JSON.stringify(payload),
       signal
     });
   } catch {

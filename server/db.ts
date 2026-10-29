@@ -23,7 +23,7 @@ export interface DocumentRow {
   updated_at: number;
 }
 
-const GENERATION_STALE_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const GENERATION_STALE_TIMEOUT_MS = 35 * 60 * 1000; // 35 minutes (> 30-minute AI generation timeout)
 const PROCESS_START_TIME = Date.now() - Math.floor(process.uptime() * 1000);
 // Leave headroom below the API's 4 MiB JSON request limit so every stored snapshot remains syncable.
 export const MAX_ANNOTATION_BYTES = 3 * 1024 * 1024;
@@ -601,7 +601,7 @@ export class DatabaseStore {
 
   /**
    * Prune locks that are either:
-   * 1. Older than 10 minutes (hard timeout).
+   * 1. Older than 35 minutes (hard timeout).
    * 2. Owned by our current PID but started before this process started (previous process crashed with same PID).
    * 3. Owned by a dead PID on the local host (ESRCH error from kill 0).
    * Keeps locks owned by alive processes.

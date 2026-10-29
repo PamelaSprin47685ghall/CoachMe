@@ -15,7 +15,7 @@ import type { Node } from 'unist';
 export interface ChatTurn {
   id: string;
   role: 'user' | 'ai';
-  content: string; // HTML or text for AI, text for user
+  content: string; // AI: light Markdown (legacy replies: light HTML); user: plain text
   reasoning?: string; // Optional reasoning/thinking process from AI
   pending?: boolean;
 }
@@ -202,6 +202,14 @@ function resolveOffsetUsingIntervals(
 }
 
 /**
+ * AI replies used to be stored as light HTML; new replies are light Markdown.
+ * A reply that opens with a block/inline HTML tag is treated as legacy HTML.
+ */
+export function isLegacyHtmlReply(content: string): boolean {
+  return /^\s*<(p|div|ul|ol|li|h[1-6]|blockquote|table|thead|tbody|tr|pre|strong|b|em|i|u|s|span|section|br|hr|mark|code|sup|sub|a)\b[^>]*>/i.test(content);
+}
+
+/**
  * Format a single ClipAnnotation as the required semantic HTML `<aside>` block:
  * <aside class="annotation">
  *   <blockquote>
@@ -216,7 +224,9 @@ function resolveOffsetUsingIntervals(
  */
 export function serializeClipToAsideHtml(
   clip: ClipAnnotation,
-  activePlaceholderClipId?: string
+  activePlaceholderClipId?: string,
+  /** Autonomous turn: the AI annotates on its own, so a placeholder is appended without a user turn. */
+  forcePlaceholder = false
 ): string {
   const blocks: string[] = [];
 
@@ -242,7 +252,8 @@ export function serializeClipToAsideHtml(
         );
       } else {
         const aiContent = msg.content.trim();
-        const wrappedAiContent = /<[a-z][\s\S]*>/i.test(aiContent)
+        // Markdown replies are escaped text inside <p>; legacy HTML replies stay as-is.
+        const wrappedAiContent = isLegacyHtmlReply(aiContent)
           ? aiContent
           : `<p>${escapeHtmlText(aiContent)}</p>`;
         blocks.push(
@@ -259,11 +270,13 @@ export function serializeClipToAsideHtml(
 
   // If the last message in this clip is from the user and hasn't been replied to yet
   const lastMsg = clip.messages[clip.messages.length - 1];
-  const needsTrailingPlaceholder = Boolean(
-    lastMsg &&
-      lastMsg.role === 'user' &&
-      (activePlaceholderClipId === undefined || activePlaceholderClipId === clip.id)
-  );
+  const needsTrailingPlaceholder =
+    (forcePlaceholder && activePlaceholderClipId === clip.id) ||
+    Boolean(
+      lastMsg &&
+        lastMsg.role === 'user' &&
+        (activePlaceholderClipId === undefined || activePlaceholderClipId === clip.id)
+    );
 
   if (needsTrailingPlaceholder) {
     blocks.push(
@@ -287,9 +300,12 @@ export function serializeClipToAsideHtml(
 export function buildAnnotatedMarkdown(
   baseMarkdown: string,
   clips: ClipAnnotation[],
-  activePlaceholderClipId?: string
+  activePlaceholderClipId?: string,
+  forcePlaceholder = false
 ): string {
-  const nonEmptyClips = clips.filter((c) => c.messages.length > 0);
+  const nonEmptyClips = clips.filter(
+    (c) => c.messages.length > 0 || (forcePlaceholder && c.id === activePlaceholderClipId)
+  );
   if (nonEmptyClips.length === 0) return baseMarkdown;
 
   const intervals = getForbiddenIntervals(baseMarkdown);
@@ -301,12 +317,16 @@ export function buildAnnotatedMarkdown(
   const parts: string[] = [];
   let previousOffset = 0;
   for (const { clip, offset } of sorted) {
-    parts.push(baseMarkdown.slice(previousOffset, offset), serializeClipToAsideHtml(clip, activePlaceholderClipId));
+    parts.push(baseMarkdown.slice(previousOffset, offset), serializeClipToAsideHtml(clip, activePlaceholderClipId, forcePlaceholder));
     previousOffset = offset;
   }
   parts.push(baseMarkdown.slice(previousOffset));
   return parts.join('');
 }
+
+/** Shared prose style for every AI generation (annotations and encyclopedia drafts). */
+export const AI_PROSE_STYLE =
+  'Follow Fei Xiaotong’s plain precision and Shi Tiesheng’s quiet clarity. Avoid officialese, performative rhetoric, translationese, and textbook cadence. Let the subject shape the prose.';
 
 /**
  * Build the exact prompt required by AGENTS.md:
@@ -314,19 +334,27 @@ export function buildAnnotatedMarkdown(
  * 就放置在曲别针处，如果用户刚刚输出的批注还没有回复，就往最后加个 AI 占位符。...
  * 最后告诉 AI，输出占位符处你的批注式回复。整个过程不用工具，也不用多轮对话。...
  * AI 不读 html，AI 只读 MarkDown.插入的曲别针可以是 html in origin markdown.
- * 要求 AI 以轻度格式的 HTML 回复，信息量要大。"
+ * 要求 AI 以轻度格式的 HTML 回复，信息量要大。"（现改为轻度 Markdown 回复。）
  */
 export function buildAiPrompt(
   baseMarkdown: string,
   clips: ClipAnnotation[],
-  targetClipId: string
+  targetClipId: string,
+  options: { autonomous?: boolean } = {}
 ): { prompt: string; annotatedMarkdown: string } {
-  const annotatedMarkdown = buildAnnotatedMarkdown(baseMarkdown, clips, targetClipId);
+  const autonomous = options.autonomous === true;
+  const annotatedMarkdown = buildAnnotatedMarkdown(baseMarkdown, clips, targetClipId, autonomous);
+  const instruction = autonomous
+    ? '请结合全文、该回复占位符所在曲别针处的上下文以及批注中已有的对话，主动在占位符处写一条新的批注：若此处尚无批注，就针对该位置的内容给出你自己的深度批注；若已有批注，请在其基础上继续延伸（新的角度、补充论据、反例、追问或总结），不要重复已有内容。只输出填入占位符的轻度 Markdown 格式回复（可用段落、**加粗**、列表、`行内代码`、引用、简单表格和 $公式$；不要写 HTML 标签，不用代码围栏包住全文，不要外层批注标签），信息量要大。'
+    : '请结合全文和批注中的历史对话，回答回复占位符前用户的最新问题。只输出填入占位符的轻度 Markdown 格式回复（可用段落、**加粗**、列表、`行内代码`、引用、简单表格和 $公式$；不要写 HTML 标签，不用代码围栏包住全文，不要外层批注标签），信息量要大。';
   const prompt = `你是一个文档阅读助手，全文如下：
 
 ${annotatedMarkdown}
 
-请结合全文和批注中的历史对话，回答回复占位符前用户的最新问题。只输出填入占位符的轻度格式 HTML 回复，信息量要大，不要代码围栏或外层批注标签。`;
+${instruction}
+
+语言风格（体例仍是批注，但行文遵循以下要求）：
+${AI_PROSE_STYLE}`;
 
   // Apply exactly one transport layer after composing the entire prompt.
   // Keep annotatedMarkdown unchanged for document preview and export.
@@ -397,10 +425,12 @@ export function extractEmbeddedClipsFromMarkdown(rawMarkdown: string): {
           content: text
         });
       } else {
+        // `<p>escaped text</p>` is a Markdown reply; anything else is legacy HTML.
+        const textOnly = bodyRaw.match(/^<p>([^<]*)<\/p>$/);
         messages.push({
           id: `${clipId}-m-${turnIdx++}`,
           role: 'ai',
-          content: bodyRaw
+          content: textOnly ? unescapeHtmlText(textOnly[1]!) : bodyRaw
         });
       }
     }

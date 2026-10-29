@@ -53,7 +53,7 @@ test('uploading annotated Markdown restores history, stores revisions across res
     expect(upload.status).toBe(201);
     let document = await readCloudDocument(upload);
     expect(document.markdown).toBe('# 导入\n\n正文结束。');
-    expect(document.clips[0]?.messages.map((message) => message.content)).toEqual(['A & B？', '<p>历史回答。</p>']);
+    expect(document.clips[0]?.messages.map((message) => message.content)).toEqual(['A & B？', '历史回答。']); // a text-only <p> reply imports as Markdown text
     const importedClip = document.clips[0]!;
     const save = await alice.request(`/api/documents/${document.id}`, 'PUT', {
       revision: document.revision,
@@ -211,5 +211,27 @@ test('revision conflicts and in-flight replies prevent losing another session’
     const final = await readCloudDocument(await alice.request(path));
     expect(final.clips[0]?.messages.map((message) => message.role)).toEqual(['user', 'ai']);
     expect((await alice.request(path, 'DELETE')).status).toBe(200);
+  } finally { env.close(); }
+});
+
+test('empty input lets the AI annotate on its own: placeholder in prompt, no user turn, one reply per press', async () => {
+  const env = createTestEnvironment();
+  try {
+    const alice = env.client(); await alice.login('alice');
+    let document = await readCloudDocument(await alice.request('/api/documents', 'POST', { name: 'auto.md', markdown }));
+    document = await readCloudDocument(await alice.request(`/api/documents/${document.id}`, 'PUT', { revision: document.revision, clips: [clip] }));
+    const path = `/api/documents/${document.id}`;
+    for (let round = 1; round <= 2; round++) {
+      const events = replyEvents(await (await alice.request(`${path}/reply`, 'POST', { revision: document.revision, clipId: clip.id, content: '   ' })).text());
+      const done = events.find((event) => event.type === 'done');
+      if (!done || done.type !== 'done') throw new Error('Autonomous reply did not finish');
+      document = done.document;
+      const roles = document.clips[0]?.messages.map((message) => message.role);
+      expect(roles).toEqual(Array(round).fill('ai'));
+      const request = env.services.aiRequests.at(-1) as { messages: Array<{ content: string }> };
+      expect(request.messages[0]?.content).toContain('AI_REPLY_PLACEHOLDER');
+      expect(request.messages[0]?.content).toContain('主动在占位符处写一条新的批注');
+      expect(request.messages[0]?.content).not.toContain('&lt;footer&gt;用户&lt;/footer&gt;');
+    }
   } finally { env.close(); }
 });

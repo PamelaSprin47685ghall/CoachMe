@@ -15,6 +15,7 @@ export interface ServerConfig {
     apiKey: string;
     model: string;
     reasoningEffort: string;
+    temperature: number;
   };
 }
 
@@ -31,7 +32,8 @@ export const DEFAULT_CONFIG: ServerConfig = {
     baseURL: '',
     apiKey: '',
     model: '',
-    reasoningEffort: ''
+    reasoningEffort: '',
+    temperature: 1
   }
 };
 
@@ -145,6 +147,16 @@ export function buildServerConfig(
   const apiKey = typeof ai['apiKey'] === 'string' ? ai['apiKey'].trim() : '';
   const model = typeof ai['model'] === 'string' ? ai['model'].trim() : '';
   const reasoningEffort = typeof ai['reasoningEffort'] === 'string' ? ai['reasoningEffort'].trim() : '';
+  let temperature = 1;
+  if (typeof ai['temperature'] === 'number' && Number.isFinite(ai['temperature'])) {
+    temperature = ai['temperature'];
+  } else if (typeof ai['temperature'] === 'string' && ai['temperature'].trim() !== '') {
+    const parsed = Number(ai['temperature'].trim());
+    if (Number.isFinite(parsed)) temperature = parsed;
+  }
+  if (temperature < 0 || temperature > 2) {
+    throw new Error('ai.temperature must be between 0 and 2');
+  }
 
   return {
     host,
@@ -159,7 +171,8 @@ export function buildServerConfig(
       baseURL,
       apiKey,
       model,
-      reasoningEffort
+      reasoningEffort,
+      temperature
     }
   };
 }

@@ -35,7 +35,7 @@ test('expanded sanitized AI HTML is rejected before committing an unsavable snap
     const document = await readCloudDocument(await user.request('/api/documents', 'POST', { name: 'expansion.md', markdown: '正文' }));
     const response = await user.request(`/api/documents/${document.id}`, 'PUT', {
       revision: document.revision,
-      clips: [{ ...clip, messages: [{ id: 'oversized-after-escaping', role: 'ai', content: '&'.repeat(20_000) }] }]
+      clips: [{ ...clip, messages: [{ id: 'oversized-after-escaping', role: 'ai', content: `<p>${'&'.repeat(19_990)}</p>` }] }]
     });
     expect(response.status).toBeGreaterThanOrEqual(400);
     expect(response.status).toBeLessThan(500);

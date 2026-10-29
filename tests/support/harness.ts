@@ -15,7 +15,7 @@ export function createTestEnvironment() {
     publicURL: 'http://127.0.0.1:4010',
     databasePath: join(directory, 'accounts.sqlite'),
     amazon: { clientId: 'test-client', clientSecret: 'test-secret' },
-    ai: { baseURL: `${services.origin}/v1`, apiKey: 'test-ai-secret', model: 'test-model', reasoningEffort: 'max' }
+    ai: { baseURL: `${services.origin}/v1`, apiKey: 'test-ai-secret', model: 'test-model', reasoningEffort: 'max', temperature: 1 }
   };
   let app = createApp(config, { amazonEndpoints: services.amazonEndpoints });
 

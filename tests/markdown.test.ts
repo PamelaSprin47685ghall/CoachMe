@@ -260,3 +260,37 @@ describe('Markdown minimal avoidance & annotation serialization', () => {
     });
   });
 });
+
+describe('autonomous AI annotation prompt', () => {
+  test('an empty clip gets an AI placeholder without any user turn', () => {
+    const empty = { id: 'clip-auto', color: '#c85a32', offset: 2, anchorSnippet: '', messages: [], createdAt: 1 };
+    const { annotatedMarkdown } = buildAiPrompt('正文内容', [empty], 'clip-auto', { autonomous: true });
+    expect(annotatedMarkdown).toContain('<!--AI_REPLY_PLACEHOLDER-->');
+    expect(annotatedMarkdown).not.toContain('<footer>用户</footer>');
+    const auto = buildAiPrompt('正文内容', [empty], 'clip-auto', { autonomous: true });
+    expect(auto.prompt).toContain('语言风格（体例仍是批注');
+    expect(auto.prompt).toContain('Follow Fei Xiaotong’s plain precision and Shi Tiesheng’s quiet clarity. Avoid officialese, performative rhetoric, translationese, and textbook cadence. Let the subject shape the prose.');
+    const normal = buildAiPrompt('正文内容', [empty], 'clip-auto');
+    expect(normal.annotatedMarkdown).toBe('正文内容');
+  });
+});
+
+describe('Markdown AI replies in the prompt and export', () => {
+  test('prompt asks for light Markdown, not HTML', () => {
+    const clip = { id: 'c', color: '#c85a32', offset: 0, anchorSnippet: '', createdAt: 1, messages: [{ id: 'u', role: 'user' as const, content: '问' }] };
+    const { prompt } = buildAiPrompt('正文', [clip], 'c');
+    expect(prompt).toContain('轻度 Markdown 格式回复');
+    expect(prompt).not.toContain('轻度格式 HTML');
+  });
+
+  test('Markdown AI replies round-trip through the exported aside', () => {
+    const clip = { id: 'c', color: '#c85a32', offset: 0, anchorSnippet: '', createdAt: 1, messages: [
+      { id: 'u', role: 'user' as const, content: '问' },
+      { id: 'a', role: 'ai' as const, content: '**答** <x> & $a<b$' },
+      { id: 'h', role: 'ai' as const, content: '<p>旧 <strong>HTML</strong> 回复</p>' }
+    ] };
+    const exported = buildAnnotatedMarkdown('正文', [clip]);
+    const parsed = extractEmbeddedClipsFromMarkdown(exported);
+    expect(parsed.clips[0]?.messages.map((m) => m.content)).toEqual(['问', '**答** <x> & $a<b$', '<p>旧 <strong>HTML</strong> 回复</p>']);
+  });
+});

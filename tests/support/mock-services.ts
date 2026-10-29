@@ -82,6 +82,11 @@ export function createMockServices(port = 0) {
                 controller.enqueue(chunk({}, 'stop'));
               } else if (behavior === 'oversized') {
                 controller.enqueue(chunk({ content: 'a'.repeat(20_001) }, 'stop'));
+              } else if ((body.messages as Array<{ role?: string }> | undefined)?.[0]?.role === 'system') {
+                // Encyclopedia draft: stream a Markdown article in visible steps.
+                controller.enqueue(chunk({ content: '# 量子纠缠\n\n**量子纠缠**是一种量子现象。' }));
+                await Bun.sleep(300);
+                controller.enqueue(chunk({ content: '\n\n## 历史\n\n云端批注：用户的问题已结合全文处理。' }, 'stop'));
               } else {
                 controller.enqueue(chunk({ content: '<p><strong>云端批注：</strong>' }));
                 controller.enqueue(chunk({ content: '用户的问题已结合全文处理。</p><script>globalThis.__bad=1</script>' }, 'stop'));

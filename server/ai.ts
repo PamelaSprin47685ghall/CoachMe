@@ -1,6 +1,7 @@
 import { streamText } from 'ai';
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import sanitizeHtml from 'sanitize-html';
+import { isLegacyHtmlReply } from '../src/lib/markdown';
 
 export const MAX_CONTENT_LENGTH = 20_000;
 export const MAX_REASONING_LENGTH = 100_000;
@@ -129,6 +130,26 @@ export function normalizeAiHtmlReply(rawText: string): string {
   return sanitized.trim();
 }
 
+/**
+ * Normalize an AI annotation reply for storage. Replies are light Markdown
+ * (rendered and sanitized by the client's Markdown pipeline); a reply that is
+ * still HTML (legacy or model slip) goes through the strict HTML sanitizer.
+ */
+export function normalizeAiReply(rawText: string): string {
+  let cleaned = rawText.trim();
+  if (!cleaned) return '';
+  const fence = cleaned.match(/^```(?:markdown|md|html|xml)?[ \t]*\n([\s\S]*?)\n?```$/i);
+  if (fence && fence[1] !== undefined) cleaned = fence[1].trim();
+  const wrapper = cleaned.match(/^<blockquote>([\s\S]*?)(?:<footer>\s*AI\s*<\/footer>)?\s*<\/blockquote>$/i);
+  if (wrapper && wrapper[1] !== undefined) cleaned = wrapper[1].trim();
+  cleaned = cleaned
+    .replace(/<!--\s*AI_REPLY_PLACEHOLDER\s*-->/g, '')
+    .replace(/<footer>\s*AI\s*<\/footer>/gi, '')
+    .trim();
+  if (!cleaned) return '';
+  return isLegacyHtmlReply(cleaned) ? normalizeAiHtmlReply(cleaned) : cleaned;
+}
+
 function escapeTextForHtml(text: string): string {
   return text
     .replace(/&/g, '&amp;')
@@ -162,9 +183,17 @@ export interface AiStreamParams {
     apiKey: string;
     model: string;
     reasoningEffort: string;
+    temperature?: number;
   };
   fetch?: typeof fetch;
   abortSignal?: AbortSignal;
+}
+
+export interface AiTextStreamParams extends AiStreamParams {
+  /** Optional system message (e.g. a fixed writing-style instruction). */
+  system?: string;
+  /** Upper bound for the streamed answer text; defaults to MAX_CONTENT_LENGTH. */
+  maxTextLength?: number;
 }
 
 export type AiStreamChunk =
@@ -172,23 +201,21 @@ export type AiStreamChunk =
   | { type: 'text'; delta: string };
 
 /**
- * Execute AI streaming call against configured OpenAI-compatible backend using a trusted
- * server-built prompt string.
- * Yields `{ type: 'reasoning', delta }` and `{ type: 'text', delta }` chunks,
- * and returns the final sanitized HTML reply and accumulated reasoning.
- *
- * Guarantees that outputs strictly satisfy maximum length bounds (MAX_CONTENT_LENGTH, MAX_REASONING_LENGTH)
- * so persisted messages remain valid for subsequent PUT updates.
+ * Shared OpenAI-compatible streaming core used by every generation kind
+ * (paperclip annotation replies, encyclopedia drafts, ...). Yields reasoning /
+ * text deltas and returns the raw accumulated text plus reasoning.
  */
-export async function* streamAiAnnotationReply(
-  params: AiStreamParams
-): AsyncGenerator<AiStreamChunk, { htmlReply: string; reasoningText: string }, void> {
-  const { prompt, aiConfig, fetch: customFetch, abortSignal } = params;
+export async function* streamAiText(
+  params: AiTextStreamParams
+): AsyncGenerator<AiStreamChunk, { text: string; reasoningText: string }, void> {
+  const { prompt, system, aiConfig, fetch: customFetch, abortSignal } = params;
+  const maxTextLength = params.maxTextLength ?? MAX_CONTENT_LENGTH;
 
   const baseURL = aiConfig.baseURL.trim().replace(/\/+$/, '');
   const apiKey = aiConfig.apiKey.trim() || 'sk-no-key-required';
   const modelId = aiConfig.model.trim() || 'gpt-4o-mini';
   const reasoningEffort = (aiConfig.reasoningEffort ?? '').trim();
+  const temperature = Number.isFinite(aiConfig.temperature) ? aiConfig.temperature! : 1;
 
   const provider = createOpenAICompatible({
     name: 'margintalk-server-ai',
@@ -200,7 +227,9 @@ export async function* streamAiAnnotationReply(
 
   const result = streamText({
     model: provider.chatModel(modelId),
+    ...(system ? { system } : {}),
     prompt,
+    temperature,
     maxRetries: 0,
     abortSignal,
     onError: ({ error }) => {
@@ -226,7 +255,7 @@ export async function* streamAiAnnotationReply(
     } else if (part.type === 'text-delta') {
       if (part.text) {
         text += part.text;
-        if (text.length > MAX_CONTENT_LENGTH) {
+        if (text.length > maxTextLength) {
           throw new Error('AI response exceeded maximum allowed length limit');
         }
         yield { type: 'text', delta: part.text };
@@ -258,8 +287,28 @@ export async function* streamAiAnnotationReply(
   if (reasoningText.length > MAX_REASONING_LENGTH) {
     throw new Error('AI reasoning exceeded maximum allowed length limit');
   }
+  if (text.length > maxTextLength) {
+    throw new Error('AI response exceeded maximum allowed length limit');
+  }
 
-  const htmlReply = normalizeAiHtmlReply(text);
+  return { text, reasoningText: reasoningText.trim() };
+}
+
+/**
+ * Execute AI streaming call against configured OpenAI-compatible backend using a trusted
+ * server-built prompt string.
+ * Yields `{ type: 'reasoning', delta }` and `{ type: 'text', delta }` chunks,
+ * and returns the final sanitized HTML reply and accumulated reasoning.
+ *
+ * Guarantees that outputs strictly satisfy maximum length bounds (MAX_CONTENT_LENGTH, MAX_REASONING_LENGTH)
+ * so persisted messages remain valid for subsequent PUT updates.
+ */
+export async function* streamAiAnnotationReply(
+  params: AiStreamParams
+): AsyncGenerator<AiStreamChunk, { htmlReply: string; reasoningText: string }, void> {
+  const { text, reasoningText } = yield* streamAiText(params);
+
+  const htmlReply = normalizeAiReply(text);
   if (!htmlReply) {
     throw new Error('AI returned an empty response');
   }
@@ -269,6 +318,6 @@ export async function* streamAiAnnotationReply(
 
   return {
     htmlReply,
-    reasoningText: reasoningText.trim()
+    reasoningText
   };
 }

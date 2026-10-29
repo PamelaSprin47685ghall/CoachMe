@@ -16,10 +16,21 @@ import {
 } from '../src/lib/markdown';
 import {
   streamAiAnnotationReply,
-  normalizeAiHtmlReply,
+  streamAiText,
+  normalizeAiReply,
   MAX_CONTENT_LENGTH,
   MAX_REASONING_LENGTH
 } from './ai';
+import {
+  WIKI_MAX_MARKDOWN_LENGTH,
+  WIKI_MAX_PROMPT_LENGTH,
+  WIKI_SYSTEM_PROMPT,
+  buildWikiUserPrompt,
+  finalizeWikiMarkdown
+} from './wiki';
+
+const AI_GENERATION_TIMEOUT_MS = 1_800_000; // 30 minutes max for any AI generation
+const SSE_HEARTBEAT_MS = 15_000;
 
 export interface AppDependencies {
   fetch?: typeof fetch;
@@ -600,7 +611,7 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
 
         let content = m.content;
         if (m.role === 'ai') {
-          content = normalizeAiHtmlReply(content);
+          content = normalizeAiReply(content);
           if (content.length > MAX_CONTENT_LENGTH) {
             return errorResponse(400, 'invalid_message', `Sanitized imported AI content exceeds maximum allowed length of ${MAX_CONTENT_LENGTH} characters`);
           }
@@ -784,7 +795,7 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
 
         let content = msgObj.content;
         if (msgObj.role === 'ai') {
-          content = normalizeAiHtmlReply(content);
+          content = normalizeAiReply(content);
           // Enforce post-normalization length constraint (prevents entity expansion attacks)
           if (content.length > MAX_CONTENT_LENGTH) {
             return errorResponse(400, 'invalid_message', `Sanitized AI message content exceeds maximum allowed length of ${MAX_CONTENT_LENGTH} characters`);
@@ -917,9 +928,9 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
       return errorResponse(400, 'invalid_content', 'Message content must be a string');
     }
     const content = rawContent.trim();
-    if (!content) {
-      return errorResponse(400, 'empty_content', 'Message content cannot be empty');
-    }
+    // Empty input = autonomous turn: no user message is stored; the AI fills a
+    // placeholder at the clip on its own (one generation per request).
+    const autonomous = content.length === 0;
     if (content.length > MAX_CONTENT_LENGTH) {
       return errorResponse(413, 'content_too_large', `Message content exceeds maximum allowed length of ${MAX_CONTENT_LENGTH}`);
     }
@@ -942,7 +953,7 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
 
     const userTurnId = `turn-${crypto.randomUUID()}`;
     const updatedClips: ClipAnnotation[] = doc.clips.map((c) => {
-      if (c.id !== rawClipId) return c;
+      if (c.id !== rawClipId || autonomous) return c;
       return {
         ...c,
         messages: [
@@ -991,7 +1002,8 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
     const { prompt: clientPrompt } = buildAiPrompt(
       persistedUserDoc.markdown,
       persistedUserDoc.clips,
-      rawClipId
+      rawClipId,
+      { autonomous }
     );
 
     // Prepare SSE stream
@@ -1002,7 +1014,7 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
     const userAbortController = new AbortController();
     activeAbortControllers.add(userAbortController);
 
-    const generationTimeoutSignal = AbortSignal.timeout(180_000); // 3 minutes max for AI generation
+    const generationTimeoutSignal = AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS);
     const combinedSignal = AbortSignal.any([userAbortController.signal, generationTimeoutSignal]);
 
     let lockReleased = false;
@@ -1014,8 +1026,23 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
       if (!isAppClosed) db.releaseGeneration(documentId, generationToken);
     };
 
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    const stopHeartbeat = () => {
+      if (heartbeat !== null) clearInterval(heartbeat);
+      heartbeat = null;
+    };
+
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
+        // SSE keep-alive comment so idle proxies/sockets never cut a long, quiet generation.
+        heartbeat = setInterval(() => {
+          if (isClosed || isAborted || isAppClosed) return stopHeartbeat();
+          try {
+            controller.enqueue(encoder.encode(': ping\n\n'));
+          } catch {
+            stopHeartbeat();
+          }
+        }, SSE_HEARTBEAT_MS);
         const sendEvent = (event: ReplyEvent) => {
           if (isClosed || isAborted || isAppClosed) return;
           try {
@@ -1132,7 +1159,145 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
             document: currentDocumentState
           });
         } finally {
+          stopHeartbeat();
           releaseLock();
+          if (!isClosed && !isAborted && !isAppClosed) {
+            isClosed = true;
+            try {
+              controller.close();
+            } catch {
+              // Ignored
+            }
+          }
+        }
+      },
+      cancel() {
+        stopHeartbeat();
+        isAborted = true;
+        userAbortController.abort();
+        releaseLock();
+      }
+    });
+
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache, no-transform',
+        Connection: 'keep-alive'
+      }
+    });
+  }
+
+  /**
+   * Encyclopedia draft: stream a Wikipedia-style article for an arbitrary brief,
+   * then store it as a new cloud document (no clips) and hand it back in `done`
+   * so the client switches straight into the normal annotation mode.
+   */
+  async function handleWikiDraft(req: Request): Promise<Response> {
+    if (!verifyMutationOrigin(req)) {
+      return errorResponse(403, 'cross_origin_denied', 'Cross-origin request denied');
+    }
+    const session = await resolveSession(req);
+    if (!session) {
+      return errorResponse(401, 'unauthorized', 'Authentication required');
+    }
+    if (!verifyCsrf(req, session.csrfToken)) {
+      return errorResponse(403, 'csrf_invalid', 'Invalid or missing CSRF token');
+    }
+    if (!isAiConfigured) {
+      return errorResponse(503, 'ai_not_configured', 'AI service is not configured on this server');
+    }
+
+    const bodyResult = await readStrictJson(req);
+    if (!bodyResult.ok) return bodyResult.response;
+    const body = bodyResult.data;
+    if (
+      !body ||
+      typeof body !== 'object' ||
+      Array.isArray(body) ||
+      Object.keys(body).some((k) => k !== 'prompt') ||
+      typeof (body as Record<string, unknown>).prompt !== 'string'
+    ) {
+      return errorResponse(400, 'invalid_body', 'Strict { prompt: string } required');
+    }
+    const brief = ((body as Record<string, unknown>).prompt as string).trim();
+    if (!brief) {
+      return errorResponse(400, 'empty_prompt', '请输入百科条目的撰写提示。');
+    }
+    if (brief.length > WIKI_MAX_PROMPT_LENGTH) {
+      return errorResponse(413, 'prompt_too_large', `提示过长（最多 ${WIKI_MAX_PROMPT_LENGTH} 字）。`);
+    }
+
+    const ownerId = session.user.id;
+    const encoder = new TextEncoder();
+    let isClosed = false;
+    let isAborted = false;
+    const userAbortController = new AbortController();
+    activeAbortControllers.add(userAbortController);
+    const combinedSignal = AbortSignal.any([
+      userAbortController.signal,
+      AbortSignal.timeout(AI_GENERATION_TIMEOUT_MS)
+    ]);
+    let heartbeat: ReturnType<typeof setInterval> | null = null;
+    const cleanup = () => {
+      if (heartbeat !== null) clearInterval(heartbeat);
+      heartbeat = null;
+      activeAbortControllers.delete(userAbortController);
+    };
+
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const write = (wire: string) => {
+          if (isClosed || isAborted || isAppClosed) return;
+          try {
+            controller.enqueue(encoder.encode(wire));
+          } catch {
+            // Controller closed
+          }
+        };
+        const sendEvent = (event: ReplyEvent) => write(`data: ${JSON.stringify(event)}\n\n`);
+        heartbeat = setInterval(() => write(': ping\n\n'), SSE_HEARTBEAT_MS);
+
+        try {
+          write(': start\n\n');
+          const aiStream = streamAiText({
+            prompt: buildWikiUserPrompt(brief),
+            system: WIKI_SYSTEM_PROMPT,
+            aiConfig: config.ai,
+            fetch: customFetch,
+            abortSignal: combinedSignal,
+            maxTextLength: WIKI_MAX_MARKDOWN_LENGTH
+          });
+          let next = await aiStream.next();
+          while (!next.done) {
+            if (isAborted || isAppClosed) return;
+            sendEvent({ type: next.value.type, delta: next.value.delta });
+            next = await aiStream.next();
+          }
+          if (isAborted || isAppClosed) return;
+
+          const article = finalizeWikiMarkdown(next.value.text, brief);
+          if (!article.markdown.replace(/^#.*$/m, '').trim()) throw new Error('AI returned an empty article');
+          const { cleanMarkdown } = extractEmbeddedClipsFromMarkdown(article.markdown);
+          const document = db.createDocument({
+            ownerId,
+            name: article.name,
+            markdown: cleanMarkdown,
+            clips: []
+          });
+          sendEvent({ type: 'done', document });
+        } catch {
+          sendEvent({
+            type: 'error',
+            error: {
+              code: 'wiki_generation_error',
+              message: combinedSignal.aborted && !isAborted
+                ? 'AI 百科条目生成超时或已取消，请重试。'
+                : 'AI 百科条目生成失败，请重试。'
+            }
+          });
+        } finally {
+          cleanup();
           if (!isClosed && !isAborted && !isAppClosed) {
             isClosed = true;
             try {
@@ -1146,7 +1311,7 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
       cancel() {
         isAborted = true;
         userAbortController.abort();
-        releaseLock();
+        cleanup();
       }
     });
 
@@ -1201,6 +1366,11 @@ export function createApp(config: ServerConfig, dependencies: AppDependencies = 
       if (method === 'POST') {
         return handleCreateDocument(req);
       }
+      return errorResponse(405, 'method_not_allowed', 'Method not allowed');
+    }
+
+    if (pathname === '/api/wiki-drafts') {
+      if (method === 'POST') return handleWikiDraft(req);
       return errorResponse(405, 'method_not_allowed', 'Method not allowed');
     }
 

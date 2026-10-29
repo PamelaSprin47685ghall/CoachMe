@@ -18,3 +18,4 @@ apiKey = ""
 model = "gpt-4o-mini"
 # Empty omits thinking options; use a value supported by your configured model, e.g. max.
 reasoningEffort = ""
+temperature = 1.0

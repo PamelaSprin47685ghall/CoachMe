@@ -71,7 +71,7 @@ test('OAuth login, automatic upload, persistent conversations, multi-session syn
   await page.getByTestId('annotation-input').fill('如何落实到每天的阅读中？');
   await page.getByTestId('annotation-input').dispatchEvent('keydown', { key: 'Enter', isComposing: true });
   await expect(page.getByTestId('chat-turn-user')).toHaveCount(1);
-  await page.getByTestId('annotation-input').press('Enter');
+  await page.getByTestId('annotation-input').press('Control+Enter');
   await expect(page.getByTestId('chat-ai-loading-reasoning')).toContainText('用户的批注');
   await page.request.post('http://127.0.0.1:3102/test/release-ai');
   await expect(page.getByTestId('chat-turn-ai')).toHaveCount(2);

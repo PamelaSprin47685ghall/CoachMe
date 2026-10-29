@@ -1,0 +1,21 @@
+{
+  "id": "/",
+  "name": "笺谈 MarginTalk · 对话式阅读批注",
+  "short_name": "笺谈",
+  "description": "在 Markdown 文档上长按别上曲别针，与 AI 对话式批注；也可撰写百科条目。",
+  "lang": "zh-CN",
+  "dir": "ltr",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
+  "orientation": "any",
+  "background_color": "#f6f4ef",
+  "theme_color": "#fbfaf7",
+  "categories": ["productivity", "education", "books"],
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
